@@ -221,3 +221,4 @@ class SQLValidator:
 # Global validator instance
 sql_validator = SQLValidator()
 
+

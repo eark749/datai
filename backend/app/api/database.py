@@ -51,7 +51,7 @@ def create_database_connection(
         database_name=connection_data.database_name,
         username=connection_data.username,
         encrypted_password=encrypted_password,
-        schema=connection_data.schema
+        schema=connection_data.db_schema
     )
     
     db.add(new_connection)
@@ -167,8 +167,8 @@ def update_database_connection(
         connection.username = connection_data.username
     if connection_data.password is not None:
         connection.encrypted_password = db_connection_manager.encrypt_password(connection_data.password)
-    if connection_data.schema is not None:
-        connection.schema = connection_data.schema
+    if connection_data.db_schema is not None:
+        connection.schema = connection_data.db_schema
     if connection_data.is_active is not None:
         connection.is_active = connection_data.is_active
     
@@ -255,4 +255,5 @@ def test_database_connection(
         error_message=test_log.error_message,
         tested_at=test_log.tested_at
     )
+
 

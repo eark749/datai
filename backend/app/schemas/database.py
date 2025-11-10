@@ -4,7 +4,6 @@ Database Connection Pydantic Schemas
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
-from uuid import UUID
 
 
 class DBConnectionCreate(BaseModel):
@@ -16,7 +15,7 @@ class DBConnectionCreate(BaseModel):
     database_name: str = Field(..., min_length=1, max_length=100)
     username: str = Field(..., min_length=1, max_length=100)
     password: str = Field(..., min_length=1)
-    schema: Optional[str] = "public"
+    db_schema: Optional[str] = "public"
 
 
 class DBConnectionUpdate(BaseModel):
@@ -27,21 +26,21 @@ class DBConnectionUpdate(BaseModel):
     database_name: Optional[str] = Field(None, min_length=1, max_length=100)
     username: Optional[str] = Field(None, min_length=1, max_length=100)
     password: Optional[str] = None
-    schema: Optional[str] = None
+    db_schema: Optional[str] = None
     is_active: Optional[bool] = None
 
 
 class DBConnectionResponse(BaseModel):
     """Schema for database connection response (without password)"""
-    id: UUID
-    user_id: UUID
+    id: str
+    user_id: str
     name: str
     db_type: str
     host: str
     port: int
     database_name: str
     username: str
-    schema: str
+    db_schema: str
     is_active: bool
     last_tested: Optional[datetime]
     created_at: datetime
@@ -57,4 +56,5 @@ class DBConnectionTest(BaseModel):
     response_time_ms: Optional[int]
     error_message: Optional[str]
     tested_at: datetime
+
 

@@ -84,3 +84,4 @@ def test_refresh_token(client, test_user):
     data = response.json()
     assert "access_token" in data
 
+

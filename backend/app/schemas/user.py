@@ -4,7 +4,6 @@ User Pydantic Schemas
 from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
 from typing import Optional
-from uuid import UUID
 
 
 class UserBase(BaseModel):
@@ -15,7 +14,7 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     """Schema for user registration"""
-    password: str = Field(..., min_length=8, max_length=100)
+    password: str = Field(..., min_length=8, max_length=72)
 
 
 class UserLogin(BaseModel):
@@ -32,7 +31,7 @@ class UserUpdate(BaseModel):
 
 class UserResponse(UserBase):
     """Schema for user response"""
-    id: UUID
+    id: str
     is_active: bool
     is_verified: bool
     created_at: datetime
@@ -45,4 +44,5 @@ class UserResponse(UserBase):
 class UserInDB(UserResponse):
     """Schema for user in database (includes sensitive data)"""
     hashed_password: str
+
 

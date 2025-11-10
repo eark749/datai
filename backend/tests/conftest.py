@@ -69,3 +69,4 @@ def auth_headers(client, test_user):
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
+

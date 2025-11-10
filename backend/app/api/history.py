@@ -99,3 +99,4 @@ def get_query_details(
     
     return query
 
+

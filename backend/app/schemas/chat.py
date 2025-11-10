@@ -4,29 +4,28 @@ Chat Pydantic Schemas
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from uuid import UUID
 
 
 class ChatCreate(BaseModel):
     """Schema for creating a new chat"""
-    db_connection_id: UUID
+    db_connection_id: str
     title: Optional[str] = None
 
 
 class MessageCreate(BaseModel):
     """Schema for creating a message"""
-    chat_id: Optional[UUID] = None
-    db_connection_id: UUID
+    chat_id: Optional[str] = None
+    db_connection_id: str
     message: str = Field(..., min_length=1, max_length=5000)
 
 
 class MessageResponse(BaseModel):
     """Schema for message response"""
-    id: UUID
-    chat_id: UUID
+    id: str
+    chat_id: str
     role: str
     content: str
-    metadata: Dict[str, Any]
+    message_metadata: Dict[str, Any]
     created_at: datetime
     
     class Config:
@@ -35,9 +34,9 @@ class MessageResponse(BaseModel):
 
 class ChatResponse(BaseModel):
     """Schema for chat response"""
-    id: UUID
-    user_id: UUID
-    db_connection_id: Optional[UUID]
+    id: str
+    user_id: str
+    db_connection_id: Optional[str]
     title: str
     is_archived: bool
     message_count: int
@@ -55,15 +54,15 @@ class ChatWithMessages(ChatResponse):
 
 class ChatQueryRequest(BaseModel):
     """Schema for chat query request"""
-    db_connection_id: UUID
+    db_connection_id: str
     message: str = Field(..., min_length=1, max_length=5000)
-    chat_id: Optional[UUID] = None
+    chat_id: Optional[str] = None
 
 
 class ChatQueryResponse(BaseModel):
     """Schema for chat query response"""
-    chat_id: UUID
-    message_id: UUID
+    chat_id: str
+    message_id: str
     user_message: str
     assistant_message: str
     sql_query: Optional[str]
@@ -71,4 +70,5 @@ class ChatQueryResponse(BaseModel):
     dashboard_html: Optional[str]
     execution_time_ms: int
     row_count: int
+
 

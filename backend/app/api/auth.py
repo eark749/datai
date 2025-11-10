@@ -110,3 +110,4 @@ def logout(token_data: RefreshTokenRequest, db: Session = Depends(get_db)):
     
     return {"message": "Successfully logged out"}
 
+

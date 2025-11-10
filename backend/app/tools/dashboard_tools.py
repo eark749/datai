@@ -618,3 +618,4 @@ class DashboardTools:
         else:
             return {"error": f"Unknown tool: {tool_name}"}
 
+

@@ -94,3 +94,4 @@ def test_empty_query():
     is_valid, error = SQLValidator.validate_sql(sql)
     assert is_valid is False
 
+

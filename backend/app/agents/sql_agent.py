@@ -218,3 +218,4 @@ Remember: You must ONLY generate SELECT queries. Never use DELETE, UPDATE, INSER
         # Run async process
         return loop.run_until_complete(self.process(user_query, chat_history))
 
+

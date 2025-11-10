@@ -1,8 +1,7 @@
 """
 Query and Dashboard History Models
 """
-from sqlalchemy import Column, String, Integer, Boolean, DateTime, ForeignKey, Text
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy import Column, String, Integer, Boolean, DateTime, ForeignKey, Text, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
@@ -10,15 +9,20 @@ import uuid
 from app.database import Base
 
 
+def generate_uuid():
+    """Generate UUID as string for SQLite compatibility"""
+    return str(uuid.uuid4())
+
+
 class QueryHistory(Base):
     """Query execution history model"""
     __tablename__ = "query_history"
     
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    chat_id = Column(UUID(as_uuid=True), ForeignKey("chats.id", ondelete="SET NULL"), nullable=True, index=True)
-    message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True)
-    db_connection_id = Column(UUID(as_uuid=True), ForeignKey("db_connections.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    chat_id = Column(String(36), ForeignKey("chats.id", ondelete="SET NULL"), nullable=True, index=True)
+    message_id = Column(String(36), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True)
+    db_connection_id = Column(String(36), ForeignKey("db_connections.id", ondelete="CASCADE"), nullable=False, index=True)
     natural_language_query = Column(Text, nullable=False)
     generated_sql = Column(Text, nullable=False)
     sql_valid = Column(Boolean, nullable=False)
@@ -43,15 +47,15 @@ class DashboardHistory(Base):
     """Dashboard generation history model"""
     __tablename__ = "dashboard_history"
     
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False, index=True)
-    query_history_id = Column(UUID(as_uuid=True), ForeignKey("query_history.id", ondelete="SET NULL"), nullable=True)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    message_id = Column(String(36), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False, index=True)
+    query_history_id = Column(String(36), ForeignKey("query_history.id", ondelete="SET NULL"), nullable=True)
     dashboard_type = Column(String(50), nullable=False)  # html, react, json
     dashboard_content = Column(Text, nullable=False)
     chart_count = Column(Integer, default=0, nullable=False)
-    chart_types = Column(JSONB, default=[], nullable=False)
-    data_summary = Column(JSONB, default={}, nullable=False)
+    chart_types = Column(JSON, default=[], nullable=False)
+    data_summary = Column(JSON, default={}, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     
     # Relationships
@@ -61,4 +65,5 @@ class DashboardHistory(Base):
     
     def __repr__(self):
         return f"<DashboardHistory {self.dashboard_type}>"
+
 
