@@ -8,27 +8,13 @@ from typing import Generator
 
 from app.config import settings
 
-# Create SQLAlchemy engine with appropriate settings for SQLite vs PostgreSQL
-connect_args = {}
-engine_kwargs = {
-    "echo": settings.DEBUG
-}
-
-# SQLite-specific configuration
-if settings.DATABASE_URL.startswith("sqlite"):
-    connect_args = {"check_same_thread": False}
-else:
-    # PostgreSQL/other database configuration
-    engine_kwargs.update({
-        "pool_pre_ping": True,
-        "pool_size": 10,
-        "max_overflow": 20
-    })
-
+# Create SQLAlchemy engine for PostgreSQL
 engine = create_engine(
     settings.DATABASE_URL,
-    connect_args=connect_args,
-    **engine_kwargs
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
+    echo=settings.DEBUG
 )
 
 # Create SessionLocal class

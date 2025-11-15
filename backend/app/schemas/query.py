@@ -4,14 +4,15 @@ Query History Pydantic Schemas
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
+from uuid import UUID
 
 
 class QueryHistoryResponse(BaseModel):
     """Schema for query history response"""
-    id: str
-    user_id: str
-    chat_id: Optional[str]
-    db_connection_id: str
+    id: UUID
+    user_id: UUID
+    chat_id: Optional[UUID]
+    db_connection_id: UUID
     natural_language_query: str
     generated_sql: str
     sql_valid: bool
@@ -27,7 +28,7 @@ class QueryHistoryResponse(BaseModel):
 
 class QueryHistoryFilter(BaseModel):
     """Schema for filtering query history"""
-    db_connection_id: Optional[str] = None
+    db_connection_id: Optional[UUID] = None
     execution_status: Optional[str] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None

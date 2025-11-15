@@ -4,6 +4,7 @@ User Pydantic Schemas
 from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
 from typing import Optional
+from uuid import UUID
 
 
 class UserBase(BaseModel):
@@ -31,7 +32,7 @@ class UserUpdate(BaseModel):
 
 class UserResponse(UserBase):
     """Schema for user response"""
-    id: str
+    id: UUID
     is_active: bool
     is_verified: bool
     created_at: datetime

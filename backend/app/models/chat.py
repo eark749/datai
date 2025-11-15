@@ -2,7 +2,8 @@
 Chat and Message Models
 """
 
-from sqlalchemy import Column, String, Integer, Boolean, DateTime, ForeignKey, Text, JSON
+from sqlalchemy import Column, String, Integer, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
@@ -10,25 +11,20 @@ import uuid
 from app.database import Base
 
 
-def generate_uuid():
-    """Generate UUID as string for SQLite compatibility"""
-    return str(uuid.uuid4())
-
-
 class Chat(Base):
     """Chat session/conversation model"""
 
     __tablename__ = "chats"
 
-    id = Column(String(36), primary_key=True, default=generate_uuid)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(
-        String(36),
+        UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     db_connection_id = Column(
-        String(36),
+        UUID(as_uuid=True),
         ForeignKey("db_connections.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
@@ -65,16 +61,16 @@ class Message(Base):
 
     __tablename__ = "messages"
 
-    id = Column(String(36), primary_key=True, default=generate_uuid)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     chat_id = Column(
-        String(36),
+        UUID(as_uuid=True),
         ForeignKey("chats.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     role = Column(String(20), nullable=False)  # user, assistant, system
     content = Column(Text, nullable=False)
-    message_metadata = Column(JSON, default={}, nullable=False)  # Renamed from 'metadata' (reserved word)
+    message_metadata = Column(JSONB, default={}, nullable=False)  # Renamed from 'metadata' (reserved word)
     token_count = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 

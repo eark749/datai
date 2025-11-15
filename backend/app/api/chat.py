@@ -11,16 +11,91 @@ from app.dependencies import get_current_user
 from app.models.user import User
 from app.models.chat import Chat
 from app.schemas.chat import (
+    ChatCreate,
     ChatQueryRequest,
     ChatQueryResponse,
     ChatResponse,
     ChatWithMessages,
-    MessageResponse
+    MessageResponse,
+    ConnectDatabaseRequest
 )
 from app.services.chat_service import ChatService
 from app.middleware import limiter
 
 router = APIRouter()
+
+
+@router.post("/new", response_model=ChatResponse, status_code=status.HTTP_201_CREATED)
+def create_new_chat(
+    chat_data: ChatCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Create a new empty chat.
+    User can optionally connect to a database or leave it for general conversation.
+    
+    Args:
+        chat_data: Chat creation data (optional db_connection_id, optional title)
+        db: Database session
+        current_user: Current authenticated user
+        
+    Returns:
+        ChatResponse: Created chat
+    """
+    chat = ChatService.create_empty_chat(
+        db=db,
+        user=current_user,
+        db_connection_id=chat_data.db_connection_id,
+        title=chat_data.title
+    )
+    return chat
+
+
+@router.patch("/{chat_id}/connect-db", response_model=ChatResponse)
+def connect_database_to_chat(
+    chat_id: UUID,
+    connect_data: ConnectDatabaseRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Connect a database to an existing chat.
+    Cannot change database if chat already has one.
+    
+    Args:
+        chat_id: Chat ID
+        connect_data: Database connection ID
+        db: Database session
+        current_user: Current authenticated user
+        
+    Returns:
+        ChatResponse: Updated chat
+        
+    Raises:
+        HTTPException: If chat not found, not owned by user, or already has database
+    """
+    # Get chat
+    chat = db.query(Chat).filter(
+        Chat.id == chat_id,
+        Chat.user_id == current_user.id
+    ).first()
+    
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat not found"
+        )
+    
+    # Connect database
+    chat = ChatService.connect_database_to_chat(
+        db=db,
+        chat=chat,
+        db_connection_id=connect_data.db_connection_id,
+        user_id=current_user.id
+    )
+    
+    return chat
 
 
 @router.post("/query", response_model=ChatQueryResponse)
@@ -48,8 +123,8 @@ async def chat_query(
         db=db,
         user=current_user,
         user_query=query_request.message,
-        db_connection_id=query_request.db_connection_id,
-        chat_id=query_request.chat_id
+        chat_id=query_request.chat_id,
+        db_connection_id=query_request.db_connection_id
     )
     
     if not result.get("success"):
@@ -63,6 +138,7 @@ async def chat_query(
         message_id=result["message_id"],
         user_message=result["user_message"],
         assistant_message=result["assistant_message"],
+        mode=result.get("mode", "general"),
         sql_query=result.get("sql_query"),
         data=result.get("data", []),
         dashboard_html=result.get("dashboard_html"),

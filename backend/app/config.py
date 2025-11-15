@@ -8,8 +8,8 @@ from typing import Optional
 class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
     
-    # App Database (SQLite for lightweight storage)
-    DATABASE_URL: str = "sqlite:///./datai_app.db"
+    # App Database (PostgreSQL on AWS)
+    DATABASE_URL: str
     
     # Anthropic API
     ANTHROPIC_API_KEY: str

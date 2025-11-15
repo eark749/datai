@@ -6,29 +6,39 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.schemas.user import UserCreate, UserResponse, UserLogin
-from app.schemas.auth import Token, RefreshTokenRequest, TokenResponse
+from app.schemas.auth import Token, RefreshTokenRequest, TokenResponse, RegisterResponse
 from app.services.auth_service import AuthService
 
 router = APIRouter()
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 def register(user_data: UserCreate, db: Session = Depends(get_db)):
     """
-    Register a new user account.
+    Register a new user account and auto-login.
     
     Args:
         user_data: User registration data (email, username, password)
         db: Database session
         
     Returns:
-        UserResponse: Created user information
+        RegisterResponse: User information with access and refresh tokens
         
     Raises:
         HTTPException: If email or username already exists
     """
+    # Create user
     user = AuthService.register_user(db, user_data)
-    return user
+    
+    # Auto-login: create tokens
+    tokens = AuthService.create_tokens(db, user)
+    
+    return RegisterResponse(
+        user=user,
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        token_type="bearer"
+    )
 
 
 @router.post("/login", response_model=Token)
@@ -109,5 +119,6 @@ def logout(token_data: RefreshTokenRequest, db: Session = Depends(get_db)):
         )
     
     return {"message": "Successfully logged out"}
+
 
 

@@ -3,6 +3,7 @@ Authentication Pydantic Schemas
 """
 from pydantic import BaseModel
 from typing import Optional
+from app.schemas.user import UserResponse
 
 
 class Token(BaseModel):
@@ -28,5 +29,14 @@ class TokenResponse(BaseModel):
     """New access token response"""
     access_token: str
     token_type: str = "bearer"
+
+
+class RegisterResponse(BaseModel):
+    """Registration response with user info and tokens"""
+    user: UserResponse
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
 
 

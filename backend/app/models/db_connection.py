@@ -3,6 +3,7 @@ Database Connection Models
 """
 
 from sqlalchemy import Column, String, Integer, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
@@ -10,19 +11,14 @@ import uuid
 from app.database import Base
 
 
-def generate_uuid():
-    """Generate UUID as string for SQLite compatibility"""
-    return str(uuid.uuid4())
-
-
 class DBConnection(Base):
     """User's business database connection configuration"""
 
     __tablename__ = "db_connections"
 
-    id = Column(String(36), primary_key=True, default=generate_uuid)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(
-        String(36),
+        UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -61,9 +57,9 @@ class ConnectionTestLog(Base):
 
     __tablename__ = "connection_test_logs"
 
-    id = Column(String(36), primary_key=True, default=generate_uuid)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     db_connection_id = Column(
-        String(36),
+        UUID(as_uuid=True),
         ForeignKey("db_connections.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

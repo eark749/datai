@@ -95,3 +95,4 @@ def test_empty_query():
     assert is_valid is False
 
 
+
