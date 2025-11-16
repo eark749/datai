@@ -1,6 +1,7 @@
 """
 Database Configuration and Session Management
 """
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -12,9 +13,15 @@ from app.config import settings
 engine = create_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-    echo=settings.DEBUG
+    pool_size=20,  # Increased from 10 for better concurrency
+    max_overflow=40,  # Increased from 20 for peak loads
+    pool_recycle=3600,  # Recycle connections every hour
+    pool_timeout=10,  # Reduced from default 30s for faster failure
+    echo=False,  # DISABLED - Query logging adds 10-50ms overhead per query
+    connect_args={
+        "connect_timeout": 5,  # 5 second connection timeout
+        "options": "-c statement_timeout=30000",  # 30 second query timeout
+    },
 )
 
 # Create SessionLocal class
@@ -34,5 +41,3 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
-
-

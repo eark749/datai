@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Login } from './components/Login';
 import { Register } from './components/Register';
 import { ChatInterface } from './components/ChatInterface';
+import { logout as logoutAPI } from './api/auth.service';
 
 type Screen = 'login' | 'register' | 'chat';
 
@@ -45,16 +46,11 @@ export default function App() {
   const handleLogout = async () => {
     if (tokens?.refreshToken) {
       try {
-        // Mock API call to logout endpoint
-        await fetch('/api/auth/logout', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ refreshToken: tokens.refreshToken }),
-        });
+        // Call the backend logout API to revoke refresh token
+        await logoutAPI(tokens.refreshToken);
       } catch (error) {
         console.error('Logout error:', error);
+        // Continue with logout even if API call fails
       }
     }
 

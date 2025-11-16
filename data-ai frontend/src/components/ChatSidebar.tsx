@@ -37,9 +37,9 @@ interface ChatSidebarProps {
   onDeleteChat: (chatId: string) => void;
   onLogout: () => void;
   dbConnections: DatabaseConnection[];
-  onAddDbConnection: (connection: Omit<DatabaseConnection, 'id'>) => void;
-  onUpdateDbConnection: (id: string, updates: Partial<DatabaseConnection>) => void;
-  onDeleteDbConnection: (id: string) => void;
+  onAddDbConnection: (connection: Omit<DatabaseConnection, 'id'>) => Promise<void>;
+  onUpdateDbConnection: (id: string, updates: Partial<DatabaseConnection>) => Promise<void>;
+  onDeleteDbConnection: (id: string) => Promise<void>;
   onSetDefaultDb: (id: string) => void;
   onTogglePin?: (chatId: string) => void;
   onToggleArchive?: (chatId: string) => void;
@@ -386,6 +386,7 @@ export function ChatSidebar({
 
         <TabsContent value="databases" className="flex-1 overflow-hidden m-0">
           <DatabaseManagement
+            key={dbConnections.length}
             dbConnections={dbConnections}
             onAddConnection={onAddDbConnection}
             onUpdateConnection={onUpdateDbConnection}

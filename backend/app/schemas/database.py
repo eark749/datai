@@ -41,7 +41,7 @@ class DBConnectionResponse(BaseModel):
     port: int
     database_name: str
     username: str
-    db_schema: str
+    db_schema: Optional[str] = None
     is_active: bool
     last_tested: Optional[datetime]
     created_at: datetime

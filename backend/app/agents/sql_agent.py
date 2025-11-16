@@ -35,31 +35,90 @@ class SQLAgent(BaseAgent):
         self.db_connection = db_connection
         self.tools = SQLTools(db_connection, db_manager)
     
-    def get_system_prompt(self) -> str:
+    def get_system_prompt(self, schema_info: Dict[str, Any] = None) -> str:
         """
         Get system prompt for SQL Agent.
+        
+        Args:
+            schema_info: Pre-loaded database schema information
         
         Returns:
             str: System prompt
         """
-        return """You are an expert SQL query generator and database analyst. Your role is to:
+        base_prompt = """You are a SQL data retrieval specialist working as part of a larger system.
 
-1. Understand the user's natural language questions about their data
-2. Use the database schema to write accurate SQL queries
-3. Validate queries for safety and correctness
-4. Execute queries and return results
+🎯 Your Role:
+Fetch data from the database by generating and executing SQL SELECT queries.
 
-Guidelines:
-- Always call get_database_schema first to understand the available tables and columns
-- Generate clean, efficient SQL queries that answer the user's question
-- Use proper JOINs when querying related tables
-- Always validate SQL queries before execution
-- Only generate SELECT queries (read-only operations)
-- Handle errors gracefully and provide helpful explanations
-- Consider performance and limit results when appropriate
-- Explain what the query does in simple terms
+✅ What You Do:
+- Convert data questions into SQL queries
+- Execute queries and return results
+- Handle: "who", "what", "show me", "list", "find", "count", "how many"
+- Aggregations: count, sum, average, max, min, group by
+- Joins across multiple tables
+- **For visualization requests**: Extract the underlying DATA need and fetch it
+  (Example: "create a chart of users" → Query users data; "show sales over time" → Query sales with dates)
 
-Remember: You must ONLY generate SELECT queries. Never use DELETE, UPDATE, INSERT, DROP, or other destructive operations."""
+🎨 Visualization Requests:
+When users ask for charts/dashboards/visualizations:
+1. **DON'T refuse** - you're part of the visualization pipeline!
+2. Focus on the DATA they want to visualize (ignore "chart", "dashboard" keywords)
+3. Fetch the data with appropriate columns
+4. Return the results - DashboardAgent will handle the visual rendering
+
+Examples:
+- "create a chart of all users" → SELECT username, email, created_at FROM users
+- "show me sales trends" → SELECT date, total_sales FROM sales ORDER BY date
+- "dashboard of login dates" → SELECT username, last_login FROM users
+
+📝 Use Chat History:
+If user says "create it again" or "show me that chart", look at chat history to understand what data they want.
+
+⚡ Workflow:
+1. Understand what DATA is needed (ignore visualization keywords)
+2. Check database schema
+3. Generate appropriate SQL SELECT query
+4. Call execute_sql tool
+5. Return data (DashboardAgent will visualize if needed)
+
+🛡️ Safety:
+- ONLY SELECT queries (read-only)
+- NEVER: DELETE, UPDATE, INSERT, DROP, ALTER, TRUNCATE
+- Use JOINs for related data
+- Add LIMIT for large datasets
+
+Tools:
+1. execute_sql - Execute query and get results (PRIMARY TOOL)
+2. validate_sql - Validate before execution (optional)
+"""
+        
+        # Include schema in prompt if provided
+        if schema_info and not schema_info.get("error"):
+            schema_str = "\n\n=== DATABASE SCHEMA ===\n"
+            schema_str += f"Database: {schema_info.get('database_name')}\n"
+            schema_str += f"Type: {schema_info.get('database_type')}\n\n"
+            
+            for table in schema_info.get('tables', []):
+                schema_str += f"Table: {table['table_name']}\n"
+                schema_str += "Columns:\n"
+                for col in table['columns']:
+                    nullable = "NULL" if col['nullable'] else "NOT NULL"
+                    schema_str += f"  - {col['name']} ({col['type']}) {nullable}\n"
+                
+                if table['primary_keys']:
+                    schema_str += f"Primary Keys: {', '.join(table['primary_keys'])}\n"
+                
+                if table['foreign_keys']:
+                    schema_str += "Foreign Keys:\n"
+                    for fk in table['foreign_keys']:
+                        schema_str += f"  - {', '.join(fk['columns'])} -> {fk['referred_table']}.{', '.join(fk['referred_columns'])}\n"
+                
+                schema_str += "\n"
+            
+            schema_str += "======================\n"
+            return base_prompt + schema_str
+        
+        return base_prompt + "\n\nNote: Call get_database_schema first to see the database structure."
     
     async def process(
         self,
@@ -79,15 +138,20 @@ Remember: You must ONLY generate SELECT queries. Never use DELETE, UPDATE, INSER
         if chat_history is None:
             chat_history = []
         
-        # Prepare messages for Claude
+        # PRE-LOAD SCHEMA for faster processing (uses cache)
+        print(f"⚡ Pre-loading database schema...")
+        schema_info = self.tools.get_database_schema(use_cache=True)
+        
+        # ALWAYS include chat history - let Claude's intelligence decide if it's relevant
         messages = self.format_chat_history(chat_history)
+        
         messages.append({
             "role": "user",
             "content": user_query
         })
         
-        # Get tool definitions
-        tools = self.tools.get_tool_definitions()
+        # Get tool definitions (remove get_database_schema since we pre-loaded it)
+        tools = [t for t in self.tools.get_tool_definitions() if t['name'] != 'get_database_schema']
         
         # Initialize result tracking
         result = {
@@ -102,8 +166,8 @@ Remember: You must ONLY generate SELECT queries. Never use DELETE, UPDATE, INSER
             "agent_thinking": []
         }
         
-        # Agentic loop with tool calling
-        max_iterations = 10
+        # Agentic loop with tool calling (reduced iterations for speed)
+        max_iterations = 5  # Reduced from 10 to 5
         iteration = 0
         
         while iteration < max_iterations:
@@ -111,25 +175,42 @@ Remember: You must ONLY generate SELECT queries. Never use DELETE, UPDATE, INSER
             
             try:
                 # Call Claude with tools
+                print(f"🤖 SQL Agent - Iteration {iteration}/{max_iterations}")
+                print(f"📝 Sending {len(messages)} messages to Claude")
+                print(f"🔧 Tools available: {[t['name'] for t in tools]}")
+                
+                # Debug: Show last few messages
+                for i, msg in enumerate(messages[-2:]):
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        preview = content[:100]
+                    else:
+                        preview = str(content)[:100]
+                    print(f"  Message {i}: [{role}] {preview}...")
+                
                 response = await self.claude.create_message_async(
                     messages=messages,
                     tools=tools,
-                    system=self.get_system_prompt(),
-                    max_tokens=4096
+                    system=self.get_system_prompt(schema_info),  # Pass pre-loaded schema
+                    max_tokens=2048  # Reduced from 4096 for faster responses
                 )
                 
                 # Check stop reason
                 stop_reason = response.get("stop_reason")
+                print(f"⏹️ Claude stop_reason: {stop_reason}")
                 
                 # Extract text content
                 text_content = self.claude.extract_text_content(response)
                 if text_content:
+                    print(f"💬 Claude says: {text_content[:200]}...")
                     result["agent_thinking"].append(text_content)
                 
                 # Check if Claude wants to use tools
                 if stop_reason == "tool_use":
                     # Extract tool calls
                     tool_calls = self.claude.extract_tool_calls(response)
+                    print(f"🔨 Claude wants to use {len(tool_calls)} tools: {[tc['name'] for tc in tool_calls]}")
                     
                     # Add assistant message with tool use
                     messages.append({
@@ -170,11 +251,14 @@ Remember: You must ONLY generate SELECT queries. Never use DELETE, UPDATE, INSER
                     
                 elif stop_reason == "end_turn":
                     # Claude has finished
+                    print(f"🏁 Claude ended conversation. Success: {result['success']}")
                     if result["success"]:
                         # Successfully executed query
                         break
                     else:
                         # No query was executed
+                        print(f"❌ ERROR: Claude did not call any tools to execute SQL")
+                        print(f"📄 Full response content: {response.get('content')}")
                         result["error"] = "Could not generate and execute SQL query"
                         break
                 else:
@@ -183,6 +267,9 @@ Remember: You must ONLY generate SELECT queries. Never use DELETE, UPDATE, INSER
                     break
                     
             except Exception as e:
+                print(f"💥 EXCEPTION in SQL Agent: {type(e).__name__}: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 result["error"] = f"Agent error: {str(e)}"
                 break
         

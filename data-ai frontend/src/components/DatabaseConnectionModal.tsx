@@ -142,6 +142,9 @@ export function DatabaseConnectionModal({
                 <SelectItem value="MSSQL">Microsoft SQL Server</SelectItem>
               </SelectContent>
             </Select>
+            <p className="text-xs text-slate-500 mt-1">
+              ℹ️ AWS RDS databases automatically use SSL encryption
+            </p>
           </div>
 
           <div className="grid grid-cols-2 gap-4">

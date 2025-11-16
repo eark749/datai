@@ -17,10 +17,23 @@ class ClaudeService:
 
     def __init__(self):
         """Initialize Claude client"""
+        if (
+            not settings.ANTHROPIC_API_KEY
+            or settings.ANTHROPIC_API_KEY == "your-api-key-here"
+        ):
+            print("⚠️ WARNING: ANTHROPIC_API_KEY not properly configured!")
+            print(
+                f"Current value: {settings.ANTHROPIC_API_KEY[:20] if settings.ANTHROPIC_API_KEY else 'None'}..."
+            )
+        else:
+            print(f"✅ Claude API Key loaded: {settings.ANTHROPIC_API_KEY[:15]}...")
+
         self.client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
         self.async_client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-        self.model = "claude-3-haiku-20240307"  # Using Claude 3 Opus instead
+        # Using Claude 3 Haiku for cost-effective responses
+        self.model = "claude-3-haiku-20240307"
         self.max_tokens = 4096
+        print(f"🤖 ClaudeService initialized with model: {self.model}")
 
     def create_message(
         self,
@@ -29,6 +42,7 @@ class ClaudeService:
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: float = 1.0,
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create a message with Claude (synchronous).
@@ -39,12 +53,13 @@ class ClaudeService:
             system: Optional system prompt
             max_tokens: Maximum tokens in response
             temperature: Temperature for sampling (0-1)
+            model: Optional model override (default: uses self.model)
 
         Returns:
             Dict: Claude API response
         """
         kwargs = {
-            "model": self.model,
+            "model": model or self.model,  # Allow model override
             "messages": messages,
             "max_tokens": max_tokens or self.max_tokens,
             "temperature": temperature,
@@ -67,6 +82,8 @@ class ClaudeService:
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: float = 1.0,
+        use_cache: bool = True,
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create a message with Claude (asynchronous).
@@ -77,12 +94,14 @@ class ClaudeService:
             system: Optional system prompt
             max_tokens: Maximum tokens in response
             temperature: Temperature for sampling (0-1)
+            use_cache: Enable prompt caching for faster responses (default: True)
+            model: Optional model override (default: uses self.model)
 
         Returns:
             Dict: Claude API response
         """
         kwargs = {
-            "model": self.model,
+            "model": model or self.model,  # Allow model override
             "messages": messages,
             "max_tokens": max_tokens or self.max_tokens,
             "temperature": temperature,
@@ -92,7 +111,17 @@ class ClaudeService:
             kwargs["tools"] = tools
 
         if system:
-            kwargs["system"] = system
+            # Enable prompt caching for system prompts (huge speed boost!)
+            if use_cache and len(system) > 1024:  # Only cache large system prompts
+                kwargs["system"] = [
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+            else:
+                kwargs["system"] = system
 
         response = await self.async_client.messages.create(**kwargs)
 

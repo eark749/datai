@@ -4,6 +4,8 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Alert } from './ui/alert';
 import { Loader2 } from 'lucide-react';
+import { register } from '../api/auth.service';
+import { AxiosError } from 'axios';
 
 interface RegisterProps {
   onRegisterSuccess: (accessToken: string, refreshToken: string) => void;
@@ -23,19 +25,24 @@ export function Register({ onRegisterSuccess, onNavigateToLogin }: RegisterProps
     setIsLoading(true);
 
     try {
-      // Simulate network delay
-      await new Promise(resolve => setTimeout(resolve, 800));
-
-      // Mock successful registration - generate tokens
-      const mockTokens = {
-        accessToken: 'mock_access_token_' + Date.now(),
-        refreshToken: 'mock_refresh_token_' + Date.now(),
-      };
-
+      // Call the backend register API
+      const response = await register({
+        email,
+        username: name,
+        password,
+      });
+      
       // Auto-login after successful registration
-      onRegisterSuccess(mockTokens.accessToken, mockTokens.refreshToken);
+      onRegisterSuccess(response.access_token, response.refresh_token);
     } catch (err) {
-      setError('Registration failed. Please try again.');
+      // Handle different error types
+      if (err instanceof AxiosError) {
+        const errorMessage = err.response?.data?.detail || 'Registration failed. Please try again.';
+        setError(errorMessage);
+      } else {
+        setError('An unexpected error occurred. Please try again.');
+      }
+      console.error('Registration error:', err);
     } finally {
       setIsLoading(false);
     }

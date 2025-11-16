@@ -49,22 +49,32 @@ class DBConnectionManager:
         """
         return self._fernet.decrypt(encrypted_password.encode()).decode()
     
-    def build_connection_url(self, db_config: DBConnection) -> str:
+    def build_connection_url(self, db_config: DBConnection, use_ssl: bool = False) -> str:
         """
         Build SQLAlchemy connection URL from database configuration.
         
         Args:
             db_config: Database connection configuration
+            use_ssl: Whether to use SSL (for AWS RDS, etc.)
             
         Returns:
             str: SQLAlchemy connection URL
         """
         password = self.decrypt_password(db_config.encrypted_password)
         
+        # Check if host is AWS RDS (auto-enable SSL)
+        is_aws_rds = 'rds.amazonaws.com' in db_config.host.lower()
+        
         if db_config.db_type == "postgresql":
             url = f"postgresql://{db_config.username}:{password}@{db_config.host}:{db_config.port}/{db_config.database_name}"
+            # Add SSL for AWS RDS
+            if is_aws_rds or use_ssl:
+                url += "?sslmode=require"
         elif db_config.db_type == "mysql":
             url = f"mysql+pymysql://{db_config.username}:{password}@{db_config.host}:{db_config.port}/{db_config.database_name}"
+            # Add SSL for AWS RDS
+            if is_aws_rds or use_ssl:
+                url += "?ssl=true"
         elif db_config.db_type == "sqlite":
             url = f"sqlite:///{db_config.database_name}"
         else:
@@ -89,17 +99,31 @@ class DBConnectionManager:
         if cache_key in self._connections:
             return self._connections[cache_key]
         
-        # Build connection URL
-        connection_url = self.build_connection_url(db_config)
+        # Build connection URL (SSL auto-detected for AWS RDS)
+        connection_url = self.build_connection_url(db_config, use_ssl=True)
+        
+        # Additional SSL arguments for AWS RDS
+        connect_args = {}
+        is_aws_rds = 'rds.amazonaws.com' in db_config.host.lower()
+        
+        if is_aws_rds and db_config.db_type == "postgresql":
+            connect_args['sslmode'] = 'require'
+        elif is_aws_rds and db_config.db_type == "mysql":
+            connect_args['ssl'] = {'ssl_verify_cert': False, 'ssl_verify_identity': False}
         
         # Create engine with connection pooling
         engine = create_engine(
             connection_url,
             pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=10,
-            pool_timeout=30,
-            echo=settings.DEBUG
+            pool_size=10,  # Increased from 5
+            max_overflow=20,  # Increased from 10
+            pool_timeout=10,  # Reduced from 30s for faster failure
+            pool_recycle=3600,  # Recycle connections every hour
+            echo=False,  # DISABLED - logging adds overhead
+            connect_args={
+                **connect_args,
+                "connect_timeout": 5  # 5 second connection timeout
+            }
         )
         
         # Test connection and set read-only mode if PostgreSQL

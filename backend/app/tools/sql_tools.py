@@ -7,11 +7,17 @@ from sqlalchemy.exc import SQLAlchemyError
 from typing import Dict, List, Any, Optional, Tuple
 import json
 import time
+from functools import lru_cache
+import hashlib
 
 from app.models.db_connection import DBConnection
 from app.services.db_service import DBConnectionManager
 from app.utils.validators import SQLValidator
 from app.config import settings
+
+
+# Global schema cache to avoid redundant schema fetches
+_schema_cache = {}
 
 
 class SQLTools:
@@ -31,10 +37,14 @@ class SQLTools:
         self.db_connection = db_connection
         self.db_manager = db_manager
         self.validator = SQLValidator()
+        self._cache_key = f"{db_connection.id}_{db_connection.database_name}"
 
-    def get_database_schema(self) -> Dict[str, Any]:
+    def get_database_schema(self, use_cache: bool = True) -> Dict[str, Any]:
         """
         Get database schema information (tables, columns, types).
+        
+        Args:
+            use_cache: Whether to use cached schema (default: True)
 
         Returns:
             Dict: Schema metadata containing tables and columns
@@ -50,7 +60,14 @@ class SQLTools:
             }
         }
         """
+        # Check cache first
+        global _schema_cache
+        if use_cache and self._cache_key in _schema_cache:
+            print(f"✅ Using cached schema for {self.db_connection.database_name}")
+            return _schema_cache[self._cache_key]
+        
         try:
+            print(f"🔄 Fetching fresh schema for {self.db_connection.database_name}")
             engine = self.db_manager.get_engine(self.db_connection, read_only=True)
             inspector = inspect(engine)
 
@@ -113,6 +130,10 @@ class SQLTools:
 
                 schema_info["tables"].append(table_info)
 
+            # Cache the schema
+            _schema_cache[self._cache_key] = schema_info
+            print(f"💾 Cached schema for {self.db_connection.database_name}")
+            
             return schema_info
 
         except Exception as e:

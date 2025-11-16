@@ -4,6 +4,8 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Alert } from './ui/alert';
 import { Loader2 } from 'lucide-react';
+import { login } from '../api/auth.service';
+import { AxiosError } from 'axios';
 
 interface LoginProps {
   onLoginSuccess: (accessToken: string, refreshToken: string) => void;
@@ -22,17 +24,20 @@ export function Login({ onLoginSuccess, onNavigateToRegister }: LoginProps) {
     setIsLoading(true);
 
     try {
-      // Simulate network delay
-      await new Promise(resolve => setTimeout(resolve, 800));
-
-      // Mock successful login - generate tokens
-      const mockTokens = {
-        accessToken: 'mock_access_token_' + Date.now(),
-        refreshToken: 'mock_refresh_token_' + Date.now(),
-      };
-      onLoginSuccess(mockTokens.accessToken, mockTokens.refreshToken);
+      // Call the backend login API
+      const response = await login({ email, password });
+      
+      // Store tokens and notify parent component
+      onLoginSuccess(response.access_token, response.refresh_token);
     } catch (err) {
-      setError('Login failed. Please try again.');
+      // Handle different error types
+      if (err instanceof AxiosError) {
+        const errorMessage = err.response?.data?.detail || 'Login failed. Please check your credentials.';
+        setError(errorMessage);
+      } else {
+        setError('An unexpected error occurred. Please try again.');
+      }
+      console.error('Login error:', err);
     } finally {
       setIsLoading(false);
     }

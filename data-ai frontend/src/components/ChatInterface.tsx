@@ -1,10 +1,26 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { ChatSidebar } from './ChatSidebar';
 import { ChatArea } from './ChatArea';
 import { ArtifactPanel } from './ArtifactPanel';
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from './ui/tooltip';
 import { Button } from './ui/button';
 import { PanelLeft, PanelLeftClose } from 'lucide-react';
+import { 
+  createChat, 
+  listChats, 
+  getChat, 
+  deleteChat as deleteChatAPI, 
+  archiveChat as archiveChatAPI,
+  sendQuery
+} from '../api/chat.service';
+import {
+  listDatabaseConnections,
+  createDatabaseConnection,
+  updateDatabaseConnection,
+  deleteDatabaseConnection as deleteDatabaseConnectionAPI,
+  DatabaseConnectionRequest
+} from '../api/database.service';
+import { AxiosError } from 'axios';
 
 interface ChatInterfaceProps {
   onLogout: () => void;
@@ -52,84 +68,179 @@ export interface DatabaseConnection {
 }
 
 export function ChatInterface({ onLogout }: ChatInterfaceProps) {
-  const [chatSessions, setChatSessions] = useState<ChatSession[]>([
-    {
-      id: '1',
-      name: 'Welcome Chat',
-      timestamp: new Date(),
-      preview: 'Hello! How can I help you today?',
-      messages: [
-        {
-          id: '1',
-          text: 'Hello! How can I help you today?',
-          sender: 'bot',
-          timestamp: new Date(),
-        },
-      ],
-      isPinned: false,
-      isArchived: false,
-    },
-  ]);
-
-  const [currentChatId, setCurrentChatId] = useState('1');
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const [currentChatId, setCurrentChatId] = useState<string>('');
   const [dbConnections, setDbConnections] = useState<DatabaseConnection[]>([]);
   const [openArtifacts, setOpenArtifacts] = useState<Artifact[]>([]);
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
   const [showArtifactPanel, setShowArtifactPanel] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSending, setIsSending] = useState(false);
 
   const currentChat = chatSessions.find(chat => chat.id === currentChatId);
 
-  const handleNewChat = () => {
-    const newChat: ChatSession = {
-      id: Date.now().toString(),
-      name: `Chat ${chatSessions.length + 1}`,
-      timestamp: new Date(),
-      preview: 'New conversation',
-      messages: [
-        {
-          id: Date.now().toString(),
-          text: 'Hello! How can I help you today?',
-          sender: 'bot',
-          timestamp: new Date(),
-        },
-      ],
-      isPinned: false,
-      isArchived: false,
+  // Load chats and databases on mount
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        setIsLoading(true);
+        
+        // Load databases FIRST
+        const dbs = await listDatabaseConnections();
+        const formattedDbs = dbs.map(db => ({
+          id: db.id,
+          name: db.name,
+          type: db.db_type,
+          host: db.host,
+          port: db.port.toString(),
+          username: db.username,
+          password: '', // Don't store password
+          database: db.database_name,
+          connected: true, // Assume connected if it exists
+          isDefault: false, // Will be set by user
+        }));
+        setDbConnections(formattedDbs);
+
+        // Load chats AFTER databases are loaded
+        const chats = await listChats();
+        if (chats.length > 0) {
+          const formattedChats = chats.map(chat => ({
+            id: chat.id,
+            name: chat.title || 'Untitled Chat',
+            timestamp: new Date(chat.created_at),
+            preview: 'Chat conversation',
+            messages: [], // Will load when selected
+            activeDbId: chat.db_connection_id,
+            isPinned: false,
+            isArchived: chat.is_archived,
+          }));
+          setChatSessions(formattedChats);
+          setCurrentChatId(formattedChats[0].id);
+          // Load the first chat's messages
+          await loadChatMessages(formattedChats[0].id);
+        } else {
+          // Create a new chat if none exists (with first available DB)
+          const defaultDbId = formattedDbs.length > 0 ? formattedDbs[0].id : undefined;
+          await createNewChatWithDb(defaultDbId);
+        }
+      } catch (error) {
+        console.error('Error loading data:', error);
+        if (error instanceof AxiosError && error.response?.status === 401) {
+          // Token expired, logout
+          onLogout();
+        } else {
+          // Create a default chat on error (without DB if not loaded)
+          await createNewChatWithDb(undefined);
+        }
+      } finally {
+        setIsLoading(false);
+      }
     };
-    setChatSessions(prev => [...prev, newChat]);
-    setCurrentChatId(newChat.id);
+
+    loadData();
+  }, []);
+
+  // Load chat messages when selected
+  const loadChatMessages = async (chatId: string) => {
+    try {
+      const chat = await getChat(chatId);
+      const messages: Message[] = chat.messages?.map(msg => ({
+        id: msg.id,
+        text: msg.content,
+        sender: msg.role === 'user' ? 'user' : 'bot',
+        timestamp: new Date(msg.created_at),
+        artifact: msg.dashboard_html ? {
+          id: msg.id + '_artifact',
+          name: 'Dashboard Report',
+          type: 'report',
+          htmlContent: msg.dashboard_html,
+        } : undefined,
+      })) || [];
+
+      setChatSessions(prev =>
+        prev.map(c =>
+          c.id === chatId ? { ...c, messages, preview: messages[messages.length - 1]?.text || 'Empty chat' } : c
+        )
+      );
+    } catch (error) {
+      console.error('Error loading chat messages:', error);
+    }
   };
 
-  const handleSelectChat = (chatId: string) => {
+  // Helper function to create a new chat with optional database ID
+  const createNewChatWithDb = async (dbId?: string) => {
+    try {
+      const newChatResponse = await createChat({ 
+        title: `Chat ${chatSessions.length + 1}`,
+        db_connection_id: dbId
+      });
+      
+      const newChat: ChatSession = {
+        id: newChatResponse.id,
+        name: newChatResponse.title,
+        timestamp: new Date(newChatResponse.created_at),
+        preview: 'New conversation',
+        messages: [],
+        isPinned: false,
+        isArchived: false,
+        activeDbId: dbId,
+      };
+      setChatSessions(prev => [newChat, ...prev]);
+      setCurrentChatId(newChat.id);
+    } catch (error) {
+      console.error('Error creating chat:', error);
+      alert('Failed to create new chat. Please try again.');
+    }
+  };
+
+  const handleNewChat = async () => {
+    // Use first available database when creating chat
+    const defaultDbId = dbConnections.length > 0 ? dbConnections[0].id : undefined;
+    await createNewChatWithDb(defaultDbId);
+  };
+
+  const handleSelectChat = async (chatId: string) => {
     setCurrentChatId(chatId);
+    // Load messages if not already loaded
+    const chat = chatSessions.find(c => c.id === chatId);
+    if (chat && chat.messages.length === 0) {
+      await loadChatMessages(chatId);
+    }
   };
 
-  const handleDeleteChat = (chatId: string) => {
+  const handleDeleteChat = async (chatId: string) => {
     // Don't allow deleting the last chat
     if (chatSessions.length === 1) {
       return;
     }
 
-    // If deleting current chat, select another one
-    if (currentChatId === chatId) {
-      const remainingChats = chatSessions.filter(chat => chat.id !== chatId);
-      setCurrentChatId(remainingChats[0].id);
-    }
+    try {
+      await deleteChatAPI(chatId);
 
-    // Remove the chat
-    setChatSessions(prev => prev.filter(chat => chat.id !== chatId));
+      // If deleting current chat, select another one
+      if (currentChatId === chatId) {
+        const remainingChats = chatSessions.filter(chat => chat.id !== chatId);
+        setCurrentChatId(remainingChats[0].id);
+      }
+
+      // Remove the chat
+      setChatSessions(prev => prev.filter(chat => chat.id !== chatId));
+    } catch (error) {
+      console.error('Error deleting chat:', error);
+      alert('Failed to delete chat. Please try again.');
+    }
   };
 
-  const handleSendMessage = (text: string, selectedDbIds?: string[]) => {
-    if (!currentChat) return;
+  const handleSendMessage = async (text: string, selectedDbIds?: string[]) => {
+    if (!currentChat || isSending) return;
 
     const selectedDbs = selectedDbIds 
       ? dbConnections.filter(db => selectedDbIds.includes(db.id))
       : [];
 
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: 'temp_' + Date.now().toString(),
       text,
       sender: 'user',
       timestamp: new Date(),
@@ -138,7 +249,7 @@ export function ChatInterface({ onLogout }: ChatInterfaceProps) {
         : undefined,
     };
 
-    // Update current chat with new message
+    // Add user message immediately
     setChatSessions(prev =>
       prev.map(chat =>
         chat.id === currentChatId
@@ -152,40 +263,31 @@ export function ChatInterface({ onLogout }: ChatInterfaceProps) {
       )
     );
 
-    // Simulate bot response
-    setTimeout(() => {
-      // Check if user requested a report (for demo purposes)
-      const userRequestedReport = text.toLowerCase().includes('report') || 
-                                   text.toLowerCase().includes('dashboard') ||
-                                   text.toLowerCase().includes('analytics');
-      
-      // Simulate backend response
-      const dbContextMessage = selectedDbs.length > 0
-        ? selectedDbs.length === 1
-          ? `Query processed with ${selectedDbs[0].name} (${selectedDbs[0].type}) database context.`
-          : `Query processed across ${selectedDbs.length} databases: ${selectedDbs.map(db => db.name).join(', ')}. Results aggregated successfully!`
-        : 'This is a demo response. Select databases to enable context-aware queries.';
+    setIsSending(true);
 
-      const mockBackendResponse = {
-        message: dbContextMessage,
-        artifact: (Math.random() > 0.7 || userRequestedReport) ? {
-          id: Date.now().toString(),
-          name: 'Sales Dashboard Report',
-          type: 'report' as const,
-          htmlContent: generateMockReport(),
+    try {
+      // Send query to backend
+      const response = await sendQuery({
+        message: text,
+        chat_id: currentChatId,
+        db_connection_id: selectedDbIds?.[0],
+      });
+
+      // Create bot response message
+      const botMessage: Message = {
+        id: response.message_id,
+        text: response.assistant_message,
+        sender: 'bot',
+        timestamp: new Date(),
+        artifact: response.dashboard_html ? {
+          id: response.message_id + '_artifact',
+          name: 'Dashboard Report',
+          type: 'report',
+          htmlContent: response.dashboard_html,
         } : undefined,
       };
 
-      const botMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: mockBackendResponse.artifact 
-          ? "I've generated a sales dashboard report for you. Click the artifact below to view it in the side panel."
-          : mockBackendResponse.message,
-        sender: 'bot',
-        timestamp: new Date(),
-        artifact: mockBackendResponse.artifact,
-      };
-
+      // Add bot response
       setChatSessions(prev =>
         prev.map(chat =>
           chat.id === currentChatId
@@ -193,25 +295,115 @@ export function ChatInterface({ onLogout }: ChatInterfaceProps) {
             : chat
         )
       );
-    }, 1000);
+    } catch (error) {
+      console.error('Error sending message:', error);
+      
+      // Determine error message
+      let errorText = 'Sorry, I encountered an error processing your request. Please try again.';
+      
+      if (error instanceof AxiosError) {
+        if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+          errorText = '⏱️ Request timed out. Dashboard generation can take up to 2 minutes. Please try again.';
+        } else if (error.response?.data?.detail) {
+          errorText = `Error: ${error.response.data.detail}`;
+        }
+      }
+      
+      // Add error message
+      const errorMessage: Message = {
+        id: 'error_' + Date.now().toString(),
+        text: errorText,
+        sender: 'bot',
+        timestamp: new Date(),
+      };
+
+      setChatSessions(prev =>
+        prev.map(chat =>
+          chat.id === currentChatId
+            ? { ...chat, messages: [...chat.messages, errorMessage] }
+            : chat
+        )
+      );
+    } finally {
+      setIsSending(false);
+    }
   };
 
-  const handleAddDbConnection = (connection: Omit<DatabaseConnection, 'id'>) => {
-    const newConnection: DatabaseConnection = {
-      ...connection,
-      id: Date.now().toString(),
-    };
-    setDbConnections(prev => [...prev, newConnection]);
+  const handleAddDbConnection = async (connection: Omit<DatabaseConnection, 'id'>) => {
+    try {
+      const dbRequest: DatabaseConnectionRequest = {
+        name: connection.name,
+        db_type: connection.type.toLowerCase(),
+        host: connection.host,
+        port: parseInt(connection.port) || 5432,
+        database_name: connection.database,
+        username: connection.username,
+        password: connection.password,
+      };
+
+      const newDb = await createDatabaseConnection(dbRequest);
+      const newConnection: DatabaseConnection = {
+        id: newDb.id,
+        name: newDb.name,
+        type: newDb.db_type,
+        host: newDb.host,
+        port: newDb.port.toString(),
+        username: newDb.username,
+        password: '',
+        database: newDb.database_name,
+        connected: true,
+        isDefault: connection.isDefault,
+      };
+      setDbConnections(prev => [...prev, newConnection]);
+    } catch (error) {
+      console.error('Error adding database connection:', error);
+      throw error;
+    }
   };
 
-  const handleUpdateDbConnection = (id: string, updates: Partial<DatabaseConnection>) => {
-    setDbConnections(prev =>
-      prev.map(conn => (conn.id === id ? { ...conn, ...updates } : conn))
-    );
+  const handleUpdateDbConnection = async (id: string, updates: Partial<DatabaseConnection>) => {
+    try {
+      if (updates.name || updates.host || updates.port || updates.database || updates.username || updates.password) {
+        const dbRequest: Partial<DatabaseConnectionRequest> = {};
+        if (updates.name) dbRequest.name = updates.name;
+        if (updates.type) dbRequest.db_type = updates.type.toLowerCase();
+        if (updates.host) dbRequest.host = updates.host;
+        if (updates.port) dbRequest.port = parseInt(updates.port);
+        if (updates.database) dbRequest.database_name = updates.database;
+        if (updates.username) dbRequest.username = updates.username;
+        if (updates.password) dbRequest.password = updates.password;
+
+        await updateDatabaseConnection(id, dbRequest);
+      }
+
+      setDbConnections(prev =>
+        prev.map(conn => (conn.id === id ? { ...conn, ...updates } : conn))
+      );
+    } catch (error) {
+      console.error('Error updating database connection:', error);
+      throw error;
+    }
   };
 
-  const handleDeleteDbConnection = (id: string) => {
-    setDbConnections(prev => prev.filter(conn => conn.id !== id));
+  const handleDeleteDbConnection = async (id: string) => {
+    try {
+      console.log('ChatInterface: Starting delete for connection:', id);
+      console.log('ChatInterface: Current connections:', dbConnections.map(c => c.id));
+      
+      await deleteDatabaseConnectionAPI(id);
+      
+      console.log('ChatInterface: API delete successful');
+      
+      // Create completely new array to force re-render
+      const newConnections = dbConnections.filter(conn => conn.id !== id);
+      console.log('ChatInterface: New connections array:', newConnections.map(c => c.id));
+      
+      setDbConnections(newConnections);
+      console.log('ChatInterface: State update triggered');
+    } catch (error) {
+      console.error('ChatInterface: Error deleting database connection:', error);
+      throw error;
+    }
   };
 
   const handleSetDefaultDb = (id: string) => {
@@ -293,13 +485,30 @@ export function ChatInterface({ onLogout }: ChatInterfaceProps) {
     );
   };
 
-  const handleToggleArchive = (chatId: string) => {
-    setChatSessions(prev =>
-      prev.map(chat =>
-        chat.id === chatId ? { ...chat, isArchived: !chat.isArchived } : chat
-      )
-    );
+  const handleToggleArchive = async (chatId: string) => {
+    try {
+      await archiveChatAPI(chatId);
+      setChatSessions(prev =>
+        prev.map(chat =>
+          chat.id === chatId ? { ...chat, isArchived: !chat.isArchived } : chat
+        )
+      );
+    } catch (error) {
+      console.error('Error archiving chat:', error);
+      alert('Failed to archive chat. Please try again.');
+    }
   };
+
+  if (isLoading) {
+    return (
+      <div className="h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-black mx-auto mb-4"></div>
+          <p className="text-slate-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen bg-gray-50 flex overflow-hidden">
@@ -370,95 +579,4 @@ export function ChatInterface({ onLogout }: ChatInterfaceProps) {
       </div>
     </div>
   );
-}
-
-function generateMockReport(): string {
-  return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body { font-family: system-ui; padding: 20px; background: white; }
-        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 12px; margin-bottom: 30px; }
-        .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .metric-card { background: #f8f9fa; padding: 20px; border-radius: 12px; border-left: 4px solid #667eea; }
-        .metric-value { font-size: 32px; font-weight: bold; color: #667eea; margin: 10px 0; }
-        .metric-label { color: #6c757d; font-size: 14px; }
-        .chart-container { background: white; padding: 20px; border-radius: 12px; border: 1px solid #e9ecef; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e9ecef; }
-        th { background: #f8f9fa; font-weight: 600; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>Sales Dashboard Report</h1>
-        <p>Generated on ${new Date().toLocaleDateString()}</p>
-      </div>
-      
-      <div class="metric-grid">
-        <div class="metric-card">
-          <div class="metric-label">Total Revenue</div>
-          <div class="metric-value">$284,590</div>
-          <div style="color: #28a745; font-size: 12px;">↑ 12.5% from last month</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Total Orders</div>
-          <div class="metric-value">1,842</div>
-          <div style="color: #28a745; font-size: 12px;">↑ 8.2% from last month</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Avg Order Value</div>
-          <div class="metric-value">$154.52</div>
-          <div style="color: #dc3545; font-size: 12px;">↓ 2.1% from last month</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Active Customers</div>
-          <div class="metric-value">892</div>
-          <div style="color: #28a745; font-size: 12px;">↑ 15.3% from last month</div>
-        </div>
-      </div>
-
-      <div class="chart-container">
-        <h3>Top Products</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Product</th>
-              <th>Units Sold</th>
-              <th>Revenue</th>
-              <th>Growth</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Premium Widget Pro</td>
-              <td>342</td>
-              <td>$68,400</td>
-              <td style="color: #28a745;">+18%</td>
-            </tr>
-            <tr>
-              <td>Standard Widget</td>
-              <td>521</td>
-              <td>$52,100</td>
-              <td style="color: #28a745;">+12%</td>
-            </tr>
-            <tr>
-              <td>Widget Accessories</td>
-              <td>789</td>
-              <td>$39,450</td>
-              <td style="color: #28a745;">+25%</td>
-            </tr>
-            <tr>
-              <td>Basic Widget</td>
-              <td>412</td>
-              <td>$24,720</td>
-              <td style="color: #dc3545;">-5%</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </body>
-    </html>
-  `;
 }

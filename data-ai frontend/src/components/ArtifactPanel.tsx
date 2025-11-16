@@ -172,7 +172,7 @@ export function ArtifactPanel({
                 srcDoc={artifact.htmlContent}
                 className="w-full h-full border-0"
                 title={artifact.name}
-                sandbox="allow-same-origin"
+                sandbox="allow-scripts allow-same-origin"
               />
             </TabsContent>
           ))}
@@ -221,7 +221,7 @@ export function ArtifactPanel({
               srcDoc={activeArtifact.htmlContent}
               className="w-full h-full border-0"
               title={activeArtifact.name}
-              sandbox="allow-same-origin"
+              sandbox="allow-scripts allow-same-origin"
             />
           </div>
         </div>

@@ -102,3 +102,5 @@ def get_query_details(
 
 
 
+
+
