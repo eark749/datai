@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     QUERY_TIMEOUT_SECONDS: int = 30
     MAX_DASHBOARD_CHARTS: int = 5
     
+    # Agent Configuration
+    AGENT_MAX_RETRIES: int = 1
+    AGENT_TIMEOUT: int = 30
+    SQL_ROW_LIMIT: int = 10000
+    DASHBOARD_MAX_CHARTS: int = 5
+    
     class Config:
         env_file = ".env"
         case_sensitive = True

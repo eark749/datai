@@ -1,332 +1,205 @@
 """
-Supervisor Agent - Main Routing Hub & General Chat Handler
+Supervisor Agent - Primary conversational interface and orchestrator
 """
 
-from typing import Dict, Any, Optional, List
-import hashlib
-import json
-import re
-from app.agents.base_agent import BaseAgent
-from app.services.claude_service import ClaudeService
+from typing import Dict, Any
+from sqlalchemy.orm import Session
+
+from app.agents.state import AgentState
+from app.services.claude_service import claude_service
+from app.agents.prompts.supervisor_prompts import (
+    SUPERVISOR_SYSTEM_PROMPT,
+    INTENT_CLASSIFICATION_PROMPT,
+    RESPONSE_FORMAT_TEMPLATE
+)
+from app.agents.tools.supervisor_tools import (
+    get_conversation_history,
+    get_database_list,
+    explain_query,
+    get_system_capabilities
+)
 
 
-class SupervisorAgent(BaseAgent):
+class SupervisorAgent:
     """
-    Supervisor Agent: Main intelligence hub that routes queries AND handles general chat.
-    
-    Responsibilities:
-    1. Analyze user queries
-    2. Decide: respond myself OR route to specialist agent
-    3. Handle general conversation directly
-    4. Route data queries to SQLAgent
-    5. Route visualization requests to DashboardAgent
-    
-    Uses hybrid approach: fast pre-filter + AI for ambiguous cases
+    Supervisor Agent that handles general conversation and routes to specialized agents.
     """
-
-    def __init__(self, claude_service: ClaudeService):
+    
+    def __init__(self):
+        """Initialize supervisor agent"""
+        self.system_prompt = SUPERVISOR_SYSTEM_PROMPT
+    
+    async def classify_intent(self, state: AgentState) -> str:
         """
-        Initialize Supervisor Agent.
-
-        Args:
-            claude_service: Claude API service
-        """
-        super().__init__(claude_service)
-        self.decision_cache = {}  # In-memory cache for routing decisions
-
-    async def route_query(
-        self, 
-        query: str, 
-        has_database: bool,
-        chat_history: Optional[List[Dict[str, Any]]] = None
-    ) -> Dict[str, Any]:
-        """
-        Main routing method - decides action and returns decision.
+        Classify user query intent.
         
         Args:
-            query: User's query
-            has_database: Whether chat has database connected
-            chat_history: Previous conversation (optional)
-            
+            state: Current agent state
+        
         Returns:
-            Dict with:
-            - action: "respond" | "sql" | "dashboard"
-            - reasoning: Why this decision was made
-            - method: "fast-path" | "ai-routed"
-            - confidence: 0.0-1.0
+            Intent classification: "general", "sql", "dashboard", "sql_and_dashboard"
         """
-        # Step 1: Check cache for previous AI decisions
-        cache_key = self._get_cache_key(query, has_database)
-        if cache_key in self.decision_cache:
-            cached = self.decision_cache[cache_key]
-            print(f"💾 Cache hit: {cached['action']}")
-            return cached
-        
-        # Step 2: AI-powered decision (ALWAYS - no keywords!)
-        print(f"🤖 AI analyzing query...")
-        decision = await self._ai_route(query, has_database, chat_history)
-        self.decision_cache[cache_key] = decision
-        return decision
-
-    def _quick_route(self, query: str, has_database: bool) -> Optional[Dict[str, Any]]:
-        """
-        NO fast-path. ALWAYS use AI routing for true intelligence.
-        
-        Args:
-            query: User's query
-            has_database: Whether database is connected
-            
-        Returns:
-            Always None - everything goes through AI
-        """
-        # Pure AI routing - no keywords, no shortcuts, just intelligence
-        return None
-
-    async def _ai_route(
-        self, 
-        query: str, 
-        has_database: bool, 
-        chat_history: Optional[List[Dict[str, Any]]]
-    ) -> Dict[str, Any]:
-        """
-        Use Claude Haiku for intelligent routing of ambiguous queries.
-        
-        Args:
-            query: User's query
-            has_database: Whether database is connected
-            chat_history: Previous conversation
-            
-        Returns:
-            Decision dict with action, reasoning, confidence
-        """
-        system_prompt = """You are an intelligent routing agent for a data analysis system.
-
-Your job: Deeply understand the user's intent and route to the appropriate action.
-
-Available actions:
-1. **respond** - I handle directly:
-   - Questions ABOUT my capabilities ("can you create dashboards?", "what can you do?")
-   - Casual conversation and acknowledgments ("hello", "thanks")
-   - Conceptual questions about databases/SQL ("what is a foreign key?")
-   - Explanations and clarifications
-   - When user needs guidance or help understanding something
-   - Follow-up questions that don't require data retrieval
-
-2. **sql** - Route to SQL Agent:
-   - Data retrieval requests from the database
-   - Questions needing actual data to answer ("who is the first user?", "how many records?")
-   - Requests to show/list/find specific data
-   - Aggregations, summaries, counts from database
-   - ANY query that needs SELECT to answer
-   - Requires database connection
-
-3. **dashboard** - Route to Dashboard Agent:
-   - Requests to CREATE visualizations ("show me sales in a chart")
-   - Explicit visualization creation ("create a dashboard", "visualize this data")
-   - When user wants charts, graphs, plots with their data
-   - This is for CREATING visuals, not asking about them
-   - Requires database connection and data
-
-Critical distinctions:
-- "Can you create dashboards?" → **respond** (question about capability)
-- "Create a dashboard of sales" → **dashboard** (action request)
-- "What is a dashboard?" → **respond** (conceptual question)
-- "Show me users in a chart" → **dashboard** (visualization request)
-- "Who is the first user?" → **sql** (data query)
-- "Do you support SQL?" → **respond** (capability question)
-- "Show me all users" → **sql** (data query, no visualization)
-
-Think about:
-- Is this a QUESTION or an ACTION?
-- Do they want to LEARN something or GET something done?
-- Are they asking ABOUT capabilities or USING capabilities?
-
-Respond with JSON only:
-{
-  "action": "respond|sql|dashboard",
-  "reasoning": "brief explanation of intent",
-  "confidence": 0.0-1.0
-}"""
-
-        user_prompt = f"""Query: "{query}"
-Database connected: {has_database}
-
-What action should be taken?"""
-
         try:
-            # Use Haiku for speed (3x faster than Sonnet)
-            response = await self.claude.create_message_async(
-                messages=[{"role": "user", "content": user_prompt}],
-                system=system_prompt,
-                max_tokens=200,
-                temperature=0.1,
-                model="claude-3-haiku-20240307"  # Fast & cheap
+            query = state["user_query"]
+            
+            # Check if dashboard is requested but we already have data
+            has_previous_data = state.get("query_results") is not None
+            
+            prompt = INTENT_CLASSIFICATION_PROMPT.format(query=query)
+            
+            response = await claude_service.create_message_async(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=50,
+                temperature=0.2
             )
             
-            text = self.claude.extract_text_content(response)
-            decision = self._parse_decision(text)
-            decision["method"] = "ai"
-            return decision
+            intent = claude_service.extract_text_content(response).strip().lower()
+            
+            # Validate intent
+            valid_intents = ["general", "sql", "dashboard", "sql_and_dashboard"]
+            if intent not in valid_intents:
+                # Default to general if unclear
+                intent = "general"
+            
+            # If dashboard requested but no data, upgrade to sql_and_dashboard
+            if intent == "dashboard" and not has_previous_data:
+                intent = "sql_and_dashboard"
+            
+            return intent
             
         except Exception as e:
-            print(f"⚠️ AI routing failed: {e}, defaulting to respond")
-            # Fallback: respond (safest default)
-            return {
-                "action": "respond",
-                "reasoning": f"AI routing error: {str(e)}",
-                "method": "fallback",
-                "confidence": 0.5
-            }
-
-    def _get_cache_key(self, query: str, has_database: bool) -> str:
-        """
-        Generate cache key for similar queries.
-        Normalizes query to improve cache hit rate.
-        """
-        # Normalize: lowercase, strip, first 50 chars
-        normalized = query.lower().strip()[:50]
-        key = f"{normalized}:{has_database}"
-        return hashlib.md5(key.encode()).hexdigest()
-
-    def _parse_decision(self, text: str) -> Dict[str, Any]:
-        """
-        Parse JSON decision from Claude's response.
-        Handles malformed JSON gracefully.
-        """
-        # Extract JSON from text
-        json_match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
-        if json_match:
-            try:
-                return json.loads(json_match.group(0))
-            except json.JSONDecodeError:
-                pass
-        
-        # Fallback: try to extract action from text
-        text_lower = text.lower()
-        if "sql" in text_lower:
-            action = "sql"
-        elif "dashboard" in text_lower:
-            action = "dashboard"
-        else:
-            action = "respond"
-        
-        return {
-            "action": action,
-            "reasoning": "Parsed from text (JSON failed)",
-            "confidence": 0.6
-        }
-
-    async def respond(
+            print(f"❌ Error classifying intent: {e}")
+            return "general"
+    
+    async def handle_general_query(
         self,
-        query: str,
-        chat_history: Optional[List[Dict[str, Any]]] = None,
-        needs_database: bool = False
-    ) -> Dict[str, Any]:
+        state: AgentState,
+        db: Session
+    ) -> str:
         """
-        Handle general chat directly (Supervisor responds).
+        Handle general queries directly without specialized agents.
         
         Args:
-            query: User's query
-            chat_history: Previous conversation
-            needs_database: If True, user asked for data but no DB connected
-            
+            state: Current agent state
+            db: Database session
+        
         Returns:
-            Dict with response text
+            Response string
         """
-        system_prompt = """You are an AI assistant representing an intelligent data analysis system.
-
-When users ask about capabilities, speak on behalf of the ENTIRE SYSTEM (use "I" to mean the system):
-- "Can you create dashboards?" → "YES! I can create dashboards with various chart types..."
-- "Do you support SQL?" → "YES! I can help you query your database..."
-- "What can you do?" → "I can analyze data, run SQL queries, and create visualizations..."
-
-Your role in conversations:
-✅ Answer questions ABOUT the system's capabilities (speak for the whole system)
-✅ Provide explanations about databases, SQL, data analysis concepts
-✅ Acknowledge responses naturally ("got it!", "great!", etc.)
-✅ Help users understand what's possible with their data
-✅ Guide users on how to use the system
-
-Key capabilities to mention when asked:
-🔹 **Data Queries**: Run SQL queries on connected databases
-🔹 **Dashboards**: Create interactive visualizations (charts, graphs, plots)
-🔹 **Data Analysis**: Aggregate, filter, join, and analyze data
-🔹 **Natural Language**: Understand plain English, no SQL knowledge needed
-
-Be enthusiastic about capabilities! Don't say "I can't do X, that's another agent's job."
-Instead say "Yes! I can do that - just ask me to [do the thing]."
-
-If no database is connected and user asks for data, say:
-"I'd love to help with that! First, connect a database and then I can [query/visualize] your data."
-
-Be friendly, concise, helpful, and speak as ONE unified system."""
-
-        # Prepare messages
-        messages = []
-        if chat_history:
-            messages = self.format_chat_history(chat_history)
-        
-        messages.append({
-            "role": "user",
-            "content": query
-        })
-        
-        # Special handling if they need database
-        if needs_database:
-            messages[-1]["content"] += "\n\n(Note: User asked for data but no database is connected)"
-        
         try:
-            response = await self.claude.create_message_async(
+            query = state["user_query"]
+            user_id = state["user_id"]
+            session_id = state["session_id"]
+            
+            # Get conversation history
+            history = await get_conversation_history(session_id, limit=5)
+            
+            # Build context
+            context_parts = []
+            
+            # Add conversation history
+            if history:
+                context_parts.append("Recent conversation:")
+                for msg in history[-3:]:  # Last 3 messages
+                    context_parts.append(f"{msg['role']}: {msg['content'][:200]}")
+            
+            # Check if query is about databases
+            if any(keyword in query.lower() for keyword in ['database', 'connect', 'connection']):
+                databases = await get_database_list(user_id, db)
+                if databases:
+                    context_parts.append(f"\nAvailable databases: {', '.join([db['name'] for db in databases])}")
+                else:
+                    context_parts.append("\nNo databases connected yet.")
+            
+            # Check if query is about capabilities
+            if any(keyword in query.lower() for keyword in ['can you', 'what do', 'capabilities', 'help']):
+                capabilities = await get_system_capabilities()
+                context_parts.append(f"\nSystem capabilities: {capabilities}")
+            
+            # Check if asking to explain previous query
+            if any(keyword in query.lower() for keyword in ['explain', 'what did', 'how does']):
+                if state.get("sql_query"):
+                    explanation = await explain_query(state["sql_query"])
+                    context_parts.append(f"\nSQL Query Explanation: {explanation}")
+            
+            context = "\n".join(context_parts)
+            
+            # Generate response
+            messages = [
+                {"role": "user", "content": RESPONSE_FORMAT_TEMPLATE.format(
+                    query=query,
+                    context=context
+                )}
+            ]
+            
+            response = await claude_service.create_message_async(
                 messages=messages,
-                system=system_prompt,
+                system=self.system_prompt,
                 max_tokens=1000,
-                temperature=0.7  # More creative for conversation
+                temperature=0.7
             )
             
-            text = self.claude.extract_text_content(response)
-            
-            return {
-                "success": True,
-                "response": text,
-                "agent": "supervisor",
-                "mode": "general"
-            }
+            return claude_service.extract_text_content(response)
             
         except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "agent": "supervisor"
-            }
-
-    async def process(
-        self,
-        user_query: str,
-        has_database: bool = False,
-        chat_history: Optional[List[Dict[str, Any]]] = None
-    ) -> Dict[str, Any]:
+            print(f"❌ Error handling general query: {e}")
+            return "I apologize, but I encountered an error processing your request. Please try again."
+    
+    async def aggregate_response(self, state: AgentState) -> str:
         """
-        Process query - route OR respond directly.
-        This is a convenience method that combines routing + responding.
+        Aggregate results from specialized agents into final response.
         
         Args:
-            user_query: User's query
-            has_database: Whether database is connected
-            chat_history: Previous conversation
-            
+            state: Current agent state with results from specialized agents
+        
         Returns:
-            Dict with action decision OR direct response
+            Final response string
         """
-        decision = await self.route_query(user_query, has_database, chat_history)
-        
-        # If action is "respond", handle it directly
-        if decision["action"] == "respond":
-            needs_db = decision.get("needs_database", False)
-            return await self.respond(user_query, chat_history, needs_db)
-        
-        # Otherwise, return routing decision for ChatService to handle
-        return {
-            "success": True,
-            "decision": decision
-        }
+        try:
+            query = state["user_query"]
+            
+            context_parts = []
+            
+            # Add SQL results
+            if state.get("sql_query") and state.get("query_results"):
+                row_count = len(state["query_results"])
+                context_parts.append(f"SQL query executed successfully, returning {row_count} rows.")
+                context_parts.append(f"SQL: {state['sql_query']}")
+            
+            # Add dashboard info
+            if state.get("dashboard_html"):
+                context_parts.append("Interactive dashboard created successfully.")
+            
+            # Add error info
+            if state.get("error"):
+                context_parts.append(f"Note: {state['error']}")
+            
+            context = "\n".join(context_parts)
+            
+            # Generate natural language response
+            messages = [
+                {"role": "user", "content": RESPONSE_FORMAT_TEMPLATE.format(
+                    query=query,
+                    context=context
+                )}
+            ]
+            
+            response = await claude_service.create_message_async(
+                messages=messages,
+                system=self.system_prompt,
+                max_tokens=800,
+                temperature=0.7
+            )
+            
+            return claude_service.extract_text_content(response)
+            
+        except Exception as e:
+            print(f"❌ Error aggregating response: {e}")
+            return "Results retrieved successfully. Please see the data and visualizations above."
+
+
+# Global instance
+supervisor_agent = SupervisorAgent()
+
+
 

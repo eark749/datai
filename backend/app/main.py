@@ -20,111 +20,65 @@ from app.middleware import (
 async def lifespan(app: FastAPI):
     """
     Application lifecycle manager - handles startup and shutdown events.
-    Pre-warms schema cache on startup for better performance.
+    Initializes Redis and LangGraph agents on startup.
     """
-    # STARTUP: Pre-warm schema cache
+    import asyncio
+    
+    # STARTUP
     print("=" * 60)
     print("🚀 Starting Application...")
     print("=" * 60)
     
-    # Use asyncio.create_task to run cache warming in background
-    # This prevents blocking and handles cancellation gracefully
-    cache_task = None
-    
     try:
-        import asyncio
-        from app.database import SessionLocal
-        from app.models.db_connection import DBConnection
-        from app.services.db_service import db_connection_manager
-        from app.tools.sql_tools import SQLTools
+        # Initialize in-memory service (no Redis needed)
+        print("   🔄 Initializing in-memory state service...")
+        from app.services.redis_service import redis_service
+        print("   ✅ In-memory service ready")
         
-        async def warm_cache():
-            """Background task to warm schema cache"""
-            try:
-                # Use run_in_executor for sync database operations
-                loop = asyncio.get_event_loop()
-                
-                def _load_schemas():
-                    db = SessionLocal()
-                    try:
-                        print("\n📦 Pre-warming database schema cache...")
-                        
-                        # Load all active database connections
-                        connections = db.query(DBConnection).filter(
-                            DBConnection.is_active == True
-                        ).all()
-                        
-                        if connections:
-                            print(f"   Found {len(connections)} active database connection(s)")
-                            
-                            for conn in connections:
-                                try:
-                                    print(f"   ⏳ Loading schema for '{conn.name}'...", end=" ", flush=True)
-                                    tools = SQLTools(conn, db_connection_manager)
-                                    schema = tools.get_database_schema(use_cache=False)
-                                    
-                                    if "error" not in schema:
-                                        table_count = len(schema.get("tables", []))
-                                        print(f"✅ ({table_count} tables)")
-                                    else:
-                                        print(f"⚠️  Error: {schema['error'][:50]}")
-                                        
-                                except Exception as e:
-                                    print(f"❌ Failed: {str(e)[:50]}")
-                            
-                            print("\n✅ Schema cache warming complete!")
-                        else:
-                            print("   ℹ️  No active database connections found")
-                            
-                    finally:
-                        db.close()
-                
-                # Run sync code in executor
-                await loop.run_in_executor(None, _load_schemas)
-                
-            except asyncio.CancelledError:
-                print("\n⚠️  Cache warming cancelled (reload detected)")
-                raise
-            except Exception as e:
-                print(f"\n⚠️  Cache warming failed (non-critical): {str(e)}")
+        # Initialize Claude service
+        print("   🔄 Initializing Claude service...")
+        from app.services.claude_service import claude_service
+        print("   ✅ Claude service ready")
         
-        # Start cache warming as background task (don't await)
-        cache_task = asyncio.create_task(warm_cache())
+        # Verify agents are importable
+        print("   🔄 Loading agent modules...")
+        from app.agents.supervisor_agent import supervisor_agent
+        from app.agents.sql_agent import sql_agent
+        from app.agents.dashboard_agent import dashboard_agent
+        print("   ✅ Agent modules loaded")
         
-        # Give it a moment to start, but don't block
-        try:
-            await asyncio.wait_for(asyncio.shield(cache_task), timeout=0.5)
-        except asyncio.TimeoutError:
-            print("   📦 Cache warming continues in background...")
-        except Exception:
-            pass
-            
     except Exception as e:
         print(f"\n⚠️  Startup warning: {str(e)}")
+        import traceback
+        traceback.print_exc()
     
     print("\n" + "=" * 60)
     print("✅ Application Ready!")
+    print("   📊 Multi-Agent System: ACTIVE")
+    print("   🎯 Supervisor Agent: READY")
+    print("   🗄️  SQL Agent: READY")
+    print("   📈 Dashboard Agent: READY")
     print("=" * 60 + "\n")
     
     yield  # Application runs here
     
-    # SHUTDOWN: Clean up resources
+    # SHUTDOWN
     print("\n🛑 Shutting down application...")
     
-    # Cancel cache warming task if still running
-    if cache_task and not cache_task.done():
-        cache_task.cancel()
-        try:
-            await cache_task
-        except asyncio.CancelledError:
-            pass
+    try:
+        # Close in-memory service
+        from app.services.redis_service import redis_service
+        redis_service.close()
+    except Exception as e:
+        print(f"⚠️  Cleanup warning: {str(e)}")
     
     try:
+        # Close database connections
         from app.services.db_service import db_connection_manager
         db_connection_manager.close_all_connections()
         print("✅ All database connections closed")
     except Exception as e:
-        print(f"⚠️  Cleanup warning: {str(e)}")
+        print(f"⚠️  Database cleanup warning: {str(e)}")
 
 
 # Create FastAPI application with lifespan

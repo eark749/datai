@@ -1,5 +1,5 @@
 """
-Chat Service - Orchestrates Agent 1 and Agent 2 flow
+Chat Service - Orchestration Layer (Agents removed - ready for new architecture)
 """
 
 from sqlalchemy.orm import Session
@@ -12,16 +12,13 @@ from app.models.chat import Chat, Message
 from app.models.query_history import QueryHistory, DashboardHistory
 from app.models.db_connection import DBConnection
 from app.models.user import User
-from app.agents.sql_agent import SQLAgent
-from app.agents.dashboard_agent import DashboardAgent
-from app.agents.supervisor_agent import SupervisorAgent
 from app.services.claude_service import claude_service
 from app.services.db_service import db_connection_manager
 from fastapi import HTTPException, status
 
 
 class ChatService:
-    """Service for managing chats and orchestrating AI agents"""
+    """Service for managing chats - ready for new architecture implementation"""
 
     @staticmethod
     def create_empty_chat(
@@ -188,7 +185,7 @@ class ChatService:
         history = []
         for msg in messages:
             if msg.role in ["user", "assistant"]:
-                # Skip error messages from history to prevent Claude from getting confused
+                # Skip error messages from history to prevent confusion
                 if msg.message_metadata and msg.message_metadata.get("error"):
                     continue
                 
@@ -214,12 +211,7 @@ class ChatService:
         db_connection_id: Optional[UUID] = None,
     ) -> Dict[str, Any]:
         """
-        NEW ARCHITECTURE: Process chat query with Supervisor-first routing.
-        
-        Flow:
-        1. Supervisor analyzes query and decides: respond | sql | dashboard
-        2. Execute appropriate action
-        3. Return response
+        Process chat query using LangGraph multi-agent workflow.
 
         Args:
             db: Database session
@@ -229,8 +221,14 @@ class ChatService:
             db_connection_id: Optional database connection ID
 
         Returns:
-            Dict: Complete response with mode, SQL (if applicable), data, and dashboard
+            Dict: Response with agent results
         """
+        from app.agents.state import create_initial_state
+        from app.agents.graph import run_agent_workflow
+        import time
+        
+        start_time = time.time()
+        
         # Get or create chat
         chat = ChatService.get_or_create_chat(db, user, db_connection_id, chat_id)
 
@@ -241,13 +239,13 @@ class ChatService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Cannot change database connection mid-chat",
                 )
+        
+        # Use chat's database connection if available
+        effective_db_id = chat.db_connection_id or db_connection_id
 
         # Update chat title if it's the first message
         if chat.message_count == 0:
             chat.title = ChatService.generate_chat_title(user_query)
-
-        # Get chat history (limit to 8 messages for performance)
-        chat_history = ChatService.get_chat_history(db, chat.id, max_messages=8)
 
         # Save user message
         user_message = Message(
@@ -262,58 +260,109 @@ class ChatService:
         db.refresh(user_message)
 
         try:
-            # 🎯 STEP 1: SUPERVISOR DECIDES FIRST (NEW ARCHITECTURE!)
-            print(f"\n🧠 Supervisor analyzing query: '{user_query[:50]}...'")
-            supervisor = SupervisorAgent(claude_service)
-            
-            decision = await supervisor.route_query(
-                query=user_query,
-                has_database=chat.db_connection_id is not None,
-                chat_history=chat_history
+            # Create initial state for agent workflow
+            initial_state = create_initial_state(
+                user_query=user_query,
+                session_id=str(chat.id),
+                user_id=user.id,
+                database_id=effective_db_id  # Pass UUID directly, not converted to int
             )
             
-            print(f"✅ Decision: {decision['action']} ({decision['method']})")
-            print(f"   Reasoning: {decision['reasoning']}")
+            # Run agent workflow
+            final_state = await run_agent_workflow(initial_state, db)
             
-            # 🎯 STEP 2: EXECUTE BASED ON DECISION
-            if decision["action"] == "respond":
-                # Supervisor handles general chat directly
-                return await ChatService._execute_supervisor_response(
-                    db, user, chat, user_message, user_query, 
-                    chat_history, decision
+            # Extract results
+            response_text = final_state.get("supervisor_response", "I processed your request.")
+            sql_query = final_state.get("sql_query")
+            query_results = final_state.get("query_results", [])
+            dashboard_html = final_state.get("dashboard_html")
+            agent_used = final_state.get("agent_used", "supervisor")
+            error = final_state.get("error")
+            execution_time = final_state.get("execution_time", 0)
+            
+            # Prepare metadata
+            message_metadata = {
+                "agent_used": agent_used,
+                "execution_time": execution_time,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            if error:
+                message_metadata["error"] = error
+            
+            if sql_query:
+                message_metadata["sql_query"] = sql_query
+            
+            if dashboard_html:
+                message_metadata["has_dashboard"] = True
+            
+            # Save assistant message
+            assistant_message = Message(
+                chat_id=chat.id,
+                role="assistant",
+                content=response_text,
+                message_metadata=message_metadata,
+            )
+            db.add(assistant_message)
+            chat.message_count += 1
+            chat.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(assistant_message)
+            
+            # Save SQL query history if applicable
+            if sql_query and query_results is not None:
+                query_history = QueryHistory(
+                    user_id=user.id,
+                    db_connection_id=effective_db_id,
+                    chat_id=chat.id,
+                    message_id=assistant_message.id,
+                    query_text=sql_query,
+                    result_data=query_results[:100],  # Store first 100 rows
+                    row_count=len(query_results),
+                    execution_time_ms=int(execution_time * 1000),
+                    status="success" if not error else "failed",
                 )
+                db.add(query_history)
             
-            elif decision["action"] == "sql":
-                # Route to SQL Agent
-                if not chat.db_connection_id:
-                    return await ChatService._handle_no_database(
-                        db, chat, user_message
-                    )
-                
-                return await ChatService._execute_sql_query(
-                    db, user, chat, user_message, user_query,
-                    chat.db_connection_id, chat_history
+            # Save dashboard history if applicable
+            if dashboard_html:
+                dashboard_history = DashboardHistory(
+                    user_id=user.id,
+                    chat_id=chat.id,
+                    message_id=assistant_message.id,
+                    dashboard_html=dashboard_html,
+                    dashboard_config=final_state.get("dashboard_config", {}),
                 )
+                db.add(dashboard_history)
             
-            elif decision["action"] == "dashboard":
-                # Route to SQL + Dashboard Agents
-                if not chat.db_connection_id:
-                    return await ChatService._handle_no_database(
-                        db, chat, user_message
-                    )
-                
-                return await ChatService._execute_sql_with_dashboard(
-                    db, user, chat, user_message, user_query,
-                    chat.db_connection_id, chat_history
-                )
+            db.commit()
             
-            else:
-                raise ValueError(f"Unknown action from supervisor: {decision['action']}")
+            total_time = time.time() - start_time
+            
+            return {
+                "success": True,
+                "chat_id": chat.id,
+                "message_id": assistant_message.id,
+                "user_message": user_query,
+                "assistant_message": response_text,
+                "mode": agent_used or "supervisor",  # Ensure mode is never None
+                "sql_query": sql_query,
+                "data": query_results if query_results is not None else [],  # Ensure data is always a list
+                "dashboard_html": dashboard_html,
+                "execution_time_ms": int(total_time * 1000),
+                "row_count": len(query_results) if query_results else 0,
+                "error": error
+            }
                 
         except Exception as e:
             # Handle unexpected errors
             error_msg = f"An error occurred: {str(e)}"
             print(f"💥 Error in process_chat_query: {error_msg}")
+            import traceback
+            traceback.print_exc()
+
+            # Rollback the transaction to clear the error state
+            db.rollback()
 
             assistant_message = Message(
                 chat_id=chat.id,
@@ -330,591 +379,4 @@ class ChatService:
                 "chat_id": chat.id,
                 "message_id": assistant_message.id,
                 "error": error_msg,
-            }
-
-    @staticmethod
-    async def _execute_supervisor_response(
-        db: Session,
-        user: User,
-        chat: Chat,
-        user_message: Message,
-        user_query: str,
-        chat_history: List[Dict[str, Any]],
-        decision: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Execute Supervisor's direct response (general chat).
-        
-        Args:
-            db: Database session
-            user: User object
-            chat: Chat object
-            user_message: User message object
-            user_query: User's query
-            chat_history: Chat history
-            decision: Routing decision from Supervisor
-            
-        Returns:
-            Dict: Response
-        """
-        print(f"💬 Supervisor handling response directly...")
-        
-        try:
-            supervisor = SupervisorAgent(claude_service)
-            
-            # Check if user needs database
-            needs_database = decision.get("needs_database", False)
-            
-            # Supervisor responds directly
-            result = await supervisor.respond(
-                query=user_query,
-                chat_history=chat_history,
-                needs_database=needs_database
-            )
-            
-            if not result.get("success"):
-                raise Exception(result.get("error", "Supervisor response failed"))
-            
-            response_text = result["response"]
-            
-            # Save assistant message
-            assistant_message = Message(
-                chat_id=chat.id,
-                role="assistant",
-                content=response_text,
-                message_metadata={
-                    "mode": "general",
-                    "agent": "supervisor",
-                    "method": decision.get("method", "unknown")
-                }
-            )
-            db.add(assistant_message)
-            chat.message_count += 1
-            chat.updated_at = datetime.utcnow()
-            db.commit()
-            db.refresh(assistant_message)
-            
-            return {
-                "success": True,
-                "chat_id": chat.id,
-                "message_id": assistant_message.id,
-                "user_message": user_query,
-                "assistant_message": response_text,
-                "mode": "general",
-                "sql_query": None,
-                "data": [],
-                "dashboard_html": None,
-                "execution_time_ms": 0,
-                "row_count": 0
-            }
-            
-        except Exception as e:
-            error_msg = f"General chat error: {str(e)}"
-            print(f"💥 Error in _execute_supervisor_response: {error_msg}")
-            
-            assistant_message = Message(
-                chat_id=chat.id,
-                role="assistant",
-                content=error_msg,
-                message_metadata={"error": True, "mode": "general"}
-            )
-            db.add(assistant_message)
-            chat.message_count += 1
-            db.commit()
-            
-            return {
-                "success": False,
-                "chat_id": chat.id,
-                "message_id": assistant_message.id,
-                "error": error_msg
-            }
-
-    @staticmethod
-    async def _handle_no_database(
-        db: Session,
-        chat: Chat,
-        user_message: Message
-    ) -> Dict[str, Any]:
-        """
-        Handle case where user asks for data but no database connected.
-        
-        Args:
-            db: Database session
-            chat: Chat object
-            user_message: User message object
-            
-        Returns:
-            Dict: Friendly error response
-        """
-        message = ("I'd love to help with that query, but you need to connect a database first. "
-                   "You can connect a database from the Database Management page. "
-                   "Once connected, I'll be able to run SQL queries and retrieve data for you!")
-        
-        assistant_message = Message(
-            chat_id=chat.id,
-            role="assistant",
-            content=message,
-            message_metadata={"mode": "general", "error": "no_database"}
-        )
-        db.add(assistant_message)
-        chat.message_count += 1
-        chat.updated_at = datetime.utcnow()
-        db.commit()
-        db.refresh(assistant_message)
-        
-        return {
-            "success": True,  # Not really an error, just informational
-            "chat_id": chat.id,
-            "message_id": assistant_message.id,
-            "user_message": user_message.content,
-            "assistant_message": message,
-            "mode": "general",
-            "sql_query": None,
-            "data": [],
-            "dashboard_html": None
-        }
-
-    @staticmethod
-    def _process_general_query(
-        db: Session,
-        user: User,
-        chat: Chat,
-        user_message: Message,
-        user_query: str,
-        chat_history: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """
-        Handle general chat questions without database.
-
-        Args:
-            db: Database session
-            user: User object
-            chat: Chat object
-            user_message: User message object
-            user_query: User's question
-            chat_history: Chat history
-
-        Returns:
-            Dict: Response with general conversation
-        """
-        try:
-            # System prompt for general conversation
-            system_prompt = """You are a helpful AI assistant specializing in data analysis, SQL, and databases.
-The user is asking general questions without a connected database.
-
-You can help with:
-- Explaining SQL concepts and syntax
-- Database design and best practices
-- Data analysis techniques
-- General questions about data
-- Answering conceptual questions
-
-Be conversational, helpful, and educational."""
-
-            # Prepare messages for Claude
-            messages = chat_history + [{"role": "user", "content": user_query}]
-
-            # Call Claude for general conversation (using sync method)
-            response = claude_service.create_message(
-                messages=messages, system=system_prompt
-            )
-
-            assistant_text = claude_service.extract_text_content(response)
-
-            # Save assistant message
-            assistant_message = Message(
-                chat_id=chat.id,
-                role="assistant",
-                content=assistant_text,
-                message_metadata={"mode": "general"},
-            )
-            db.add(assistant_message)
-            chat.message_count += 1
-            chat.updated_at = datetime.utcnow()
-            db.commit()
-            db.refresh(assistant_message)
-
-            return {
-                "success": True,
-                "chat_id": chat.id,
-                "message_id": assistant_message.id,
-                "user_message": user_query,
-                "assistant_message": assistant_text,
-                "mode": "general",
-                "sql_query": None,
-                "data": [],
-                "dashboard_html": None,
-                "execution_time_ms": 0,
-                "row_count": 0,
-            }
-
-        except Exception as e:
-            error_msg = f"Error in general chat: {str(e)}"
-
-            assistant_message = Message(
-                chat_id=chat.id,
-                role="assistant",
-                content=error_msg,
-                message_metadata={"error": True, "mode": "general"},
-            )
-            db.add(assistant_message)
-            chat.message_count += 1
-            db.commit()
-
-            return {
-                "success": False,
-                "chat_id": chat.id,
-                "message_id": assistant_message.id,
-                "error": error_msg,
-            }
-
-    @staticmethod
-    async def _execute_sql_query(
-        db: Session,
-        user: User,
-        chat: Chat,
-        user_message: Message,
-        user_query: str,
-        db_connection_id: UUID,
-        chat_history: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """
-        Execute SQL query (no dashboard).
-        
-        Args:
-            db: Database session
-            user: User object
-            chat: Chat object
-            user_message: User message object
-            user_query: User's query
-            db_connection_id: Database connection ID
-            chat_history: Chat history
-
-        Returns:
-            Dict: Response with SQL and data
-        """
-        print(f"📊 Executing SQL query...")
-        
-        try:
-            # Get database connection
-            db_config = (
-                db.query(DBConnection)
-                .filter(
-                    DBConnection.id == db_connection_id, DBConnection.user_id == user.id
-                )
-                .first()
-            )
-
-            if not db_config:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Database connection not found",
-                )
-            
-            # Initialize SQL Agent
-            sql_agent = SQLAgent(claude_service, db_config, db_connection_manager)
-
-            # Process query
-            sql_results = await sql_agent.process(user_query, chat_history)
-
-            if not sql_results.get("success"):
-                # SQL generation/execution failed
-                error_msg = f"Could not execute query: {sql_results.get('error', 'Unknown error')}"
-
-                # Save error message
-                assistant_message = Message(
-                    chat_id=chat.id,
-                    role="assistant",
-                    content=error_msg,
-                    message_metadata={"error": True, "mode": "sql"},
-                )
-                db.add(assistant_message)
-                chat.message_count += 1
-                db.commit()
-
-                return {
-                    "success": False,
-                    "chat_id": chat.id,
-                    "message_id": assistant_message.id,
-                    "mode": "sql",
-                    "error": error_msg,
-                }
-
-            # Save query history
-            query_history = QueryHistory(
-                user_id=user.id,
-                chat_id=chat.id,
-                message_id=user_message.id,
-                db_connection_id=db_connection_id,
-                natural_language_query=user_query,
-                generated_sql=sql_results.get("sql_query", ""),
-                sql_valid=True,
-                execution_status="success",
-                execution_time_ms=sql_results.get("execution_time_ms", 0),
-                row_count=sql_results.get("row_count", 0),
-            )
-            db.add(query_history)
-            db.commit()
-            db.refresh(query_history)
-
-            # Format response based on results
-            row_count = sql_results.get("row_count", 0)
-            data = sql_results.get("data", [])
-            
-            if row_count == 0:
-                response_content = "No results found for your query."
-            elif row_count == 1 and len(data) > 0:
-                # Single row - describe it
-                response_content = "Here's what I found:\n\n"
-                row = data[0]
-                for key, value in row.items():
-                    if value is not None:
-                        response_content += f"• **{key}**: {value}\n"
-            else:
-                # Multiple rows - summarize
-                response_content = f"Found {row_count} results."
-                if row_count <= 10:
-                    response_content += "\n\n"
-                    for idx, row in enumerate(data, 1):
-                        response_content += f"{idx}. "
-                        # Show first few columns
-                        items = list(row.items())[:3]
-                        response_content += ", ".join([f"{k}: {v}" for k, v in items if v is not None])
-                        response_content += "\n"
-
-            # Save assistant message
-            assistant_message = Message(
-                chat_id=chat.id,
-                role="assistant",
-                content=response_content,
-                message_metadata={
-                    "mode": "sql",
-                    "agent": "sql",
-                    "sql_query": sql_results.get("sql_query"),
-                    "execution_time_ms": sql_results.get("execution_time_ms"),
-                    "row_count": sql_results.get("row_count"),
-                },
-            )
-            db.add(assistant_message)
-            chat.message_count += 1
-            chat.updated_at = datetime.utcnow()
-            db.commit()
-            db.refresh(assistant_message)
-
-            return {
-                "success": True,
-                "chat_id": chat.id,
-                "message_id": assistant_message.id,
-                "user_message": user_query,
-                "assistant_message": response_content,
-                "mode": "sql",
-                "sql_query": sql_results.get("sql_query"),
-                "execution_time_ms": sql_results.get("execution_time_ms", 0),
-                "row_count": sql_results.get("row_count", 0),
-                "data": sql_results.get("data", []),
-                "columns": sql_results.get("columns", []),
-                "dashboard_html": None
-            }
-
-        except Exception as e:
-            # Handle unexpected errors
-            error_msg = f"SQL query error: {str(e)}"
-            print(f"💥 Error in _execute_sql_query: {error_msg}")
-
-            assistant_message = Message(
-                chat_id=chat.id,
-                role="assistant",
-                content=error_msg,
-                message_metadata={"error": True, "error_detail": str(e), "mode": "sql"},
-            )
-            db.add(assistant_message)
-            chat.message_count += 1
-            db.commit()
-
-            return {
-                "success": False,
-                "chat_id": chat.id,
-                "message_id": assistant_message.id,
-                "mode": "sql",
-                "error": error_msg,
-            }
-
-    @staticmethod
-    async def _execute_sql_with_dashboard(
-        db: Session,
-        user: User,
-        chat: Chat,
-        user_message: Message,
-        user_query: str,
-        db_connection_id: UUID,
-        chat_history: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """
-        Execute SQL query + create dashboard.
-        
-        Args:
-            db: Database session
-            user: User object
-            chat: Chat object
-            user_message: User message object
-            user_query: User's query
-            db_connection_id: Database connection ID
-            chat_history: Chat history
-
-        Returns:
-            Dict: Response with SQL, data, and dashboard
-        """
-        print(f"📊📈 Executing SQL + Dashboard...")
-        
-        try:
-            # Step 1: Execute SQL query
-            # Get DB config
-            db_config = (
-                db.query(DBConnection)
-                .filter(
-                    DBConnection.id == db_connection_id, DBConnection.user_id == user.id
-                )
-                .first()
-            )
-
-            if not db_config:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Database connection not found",
-                )
-            
-            sql_agent = SQLAgent(claude_service, db_config, db_connection_manager)
-            sql_results = await sql_agent.process(user_query, chat_history)
-            
-            if not sql_results.get("success"):
-                error_msg = f"Could not execute query: {sql_results.get('error', 'Unknown error')}"
-                assistant_message = Message(
-                    chat_id=chat.id,
-                    role="assistant",
-                    content=error_msg,
-                    message_metadata={"error": True, "mode": "sql"},
-                )
-                db.add(assistant_message)
-                chat.message_count += 1
-                db.commit()
-                return {
-                    "success": False,
-                    "chat_id": chat.id,
-                    "message_id": assistant_message.id,
-                    "error": error_msg
-                }
-            
-            # Save query history
-            query_history = QueryHistory(
-                user_id=user.id,
-                chat_id=chat.id,
-                message_id=user_message.id,
-                db_connection_id=db_connection_id,
-                natural_language_query=user_query,
-                generated_sql=sql_results.get("sql_query", ""),
-                sql_valid=True,
-                execution_status="success",
-                execution_time_ms=sql_results.get("execution_time_ms", 0),
-                row_count=sql_results.get("row_count", 0),
-            )
-            db.add(query_history)
-            db.commit()
-            db.refresh(query_history)
-            
-            # Step 2: Create dashboard
-            dashboard_agent = DashboardAgent(claude_service)
-            
-            try:
-                dashboard_results = await dashboard_agent.process(
-                    query_results=sql_results,
-                    user_query=user_query,
-                    sql_query=sql_results.get("sql_query"),
-                    timeout=30
-                )
-                
-                if not dashboard_results.get("success"):
-                    print(f"⚠️ Dashboard failed: {dashboard_results.get('error')}")
-                    # Continue with SQL only
-                    response_content = f"Found {sql_results['row_count']} results, but couldn't create visualization."
-                    dashboard_html = None
-                else:
-                    response_content = f"I've created a dashboard with the data. Found {sql_results['row_count']} rows."
-                    dashboard_html = dashboard_results.get("dashboard_html")
-                    
-            except Exception as e:
-                print(f"💥 Dashboard exception: {str(e)}")
-                response_content = f"Found {sql_results['row_count']} results, but couldn't create visualization."
-                dashboard_html = None
-                dashboard_results = {"success": False}
-            
-            # Save assistant message
-            assistant_message = Message(
-                chat_id=chat.id,
-                role="assistant",
-                content=response_content,
-                message_metadata={
-                    "mode": "sql",
-                    "agent": "sql+dashboard",
-                    "sql_query": sql_results.get("sql_query"),
-                    "execution_time_ms": sql_results.get("execution_time_ms"),
-                    "row_count": sql_results.get("row_count"),
-                    "dashboard_type": dashboard_results.get("dashboard_type"),
-                    "chart_count": dashboard_results.get("chart_count", 0),
-                },
-            )
-            db.add(assistant_message)
-            chat.message_count += 1
-            chat.updated_at = datetime.utcnow()
-            db.commit()
-            db.refresh(assistant_message)
-            
-            # Save dashboard history if successful
-            if dashboard_results.get("success") and dashboard_html:
-                dashboard_history = DashboardHistory(
-                    user_id=user.id,
-                    message_id=assistant_message.id,
-                    query_history_id=query_history.id,
-                    dashboard_type="html",
-                    dashboard_content=dashboard_html,
-                    chart_count=dashboard_results.get("chart_count", 0),
-                    chart_types=dashboard_results.get("chart_types", []),
-                    data_summary={},
-                )
-                db.add(dashboard_history)
-                db.commit()
-            
-            return {
-                "success": True,
-                "chat_id": chat.id,
-                "message_id": assistant_message.id,
-                "user_message": user_query,
-                "assistant_message": response_content,
-                "mode": "sql",
-                "sql_query": sql_results.get("sql_query"),
-                "execution_time_ms": sql_results.get("execution_time_ms", 0),
-                "row_count": sql_results.get("row_count", 0),
-                "data": sql_results.get("data", []),
-                "columns": sql_results.get("columns", []),
-                "dashboard_html": dashboard_html
-            }
-            
-        except Exception as e:
-            error_msg = f"Dashboard query error: {str(e)}"
-            print(f"💥 Error in _execute_sql_with_dashboard: {error_msg}")
-            
-            assistant_message = Message(
-                chat_id=chat.id,
-                role="assistant",
-                content=error_msg,
-                message_metadata={"error": True, "mode": "sql"},
-            )
-            db.add(assistant_message)
-            chat.message_count += 1
-            db.commit()
-            
-            return {
-                "success": False,
-                "chat_id": chat.id,
-                "message_id": assistant_message.id,
-                "error": error_msg
             }
