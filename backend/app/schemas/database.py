@@ -59,3 +59,11 @@ class DBConnectionTest(BaseModel):
     tested_at: datetime
 
 
+class DBConnectionConnect(BaseModel):
+    """Schema for connection connect result (with schema)"""
+    connection: DBConnectionResponse
+    schema_loaded: bool
+    schema_info: Optional[dict] = None
+    error_message: Optional[str] = None
+
+

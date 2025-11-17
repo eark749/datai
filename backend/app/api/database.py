@@ -14,7 +14,8 @@ from app.schemas.database import (
     DBConnectionCreate,
     DBConnectionUpdate,
     DBConnectionResponse,
-    DBConnectionTest
+    DBConnectionTest,
+    DBConnectionConnect
 )
 from app.services.db_service import db_connection_manager
 
@@ -255,5 +256,83 @@ def test_database_connection(
         error_message=test_log.error_message,
         tested_at=test_log.tested_at
     )
+
+
+@router.post("/connect", response_model=DBConnectionConnect, status_code=status.HTTP_201_CREATED)
+async def connect_and_load_schema(
+    connection_data: DBConnectionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Create a new database connection and immediately load its schema.
+    
+    Args:
+        connection_data: Database connection details
+        db: Database session
+        current_user: Current authenticated user
+        
+    Returns:
+        DBConnectionConnect: Connection details with schema information
+        
+    Raises:
+        HTTPException: If connection fails or schema cannot be loaded
+    """
+    try:
+        # Encrypt password
+        encrypted_password = db_connection_manager.encrypt_password(connection_data.password)
+        
+        # Create new database connection
+        new_connection = DBConnection(
+            user_id=current_user.id,
+            name=connection_data.name,
+            db_type=connection_data.db_type,
+            host=connection_data.host,
+            port=connection_data.port,
+            database_name=connection_data.database_name,
+            username=connection_data.username,
+            encrypted_password=encrypted_password,
+            schema=connection_data.db_schema
+        )
+        
+        # Add to session to get an ID assigned (but don't commit yet)
+        db.add(new_connection)
+        db.flush()  # This assigns the ID without committing
+        
+        # Test the connection (now it has an ID for logging)
+        test_log = db_connection_manager.test_connection(new_connection, db)
+        
+        if test_log.test_status != "success":
+            # Rollback the connection creation
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Connection test failed: {test_log.error_message}"
+            )
+        
+        # Connection successful, commit it
+        db.commit()
+        db.refresh(new_connection)
+        
+        # TODO: Implement schema loading with new architecture
+        schema_loaded = False
+        schema_info = None
+        error_message = "Schema loading not yet implemented"
+        
+        return DBConnectionConnect(
+            connection=new_connection,
+            schema_loaded=schema_loaded,
+            schema_info=schema_info,
+            error_message=error_message
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create connection: {str(e)}"
+        )
 
 

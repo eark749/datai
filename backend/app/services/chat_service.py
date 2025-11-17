@@ -211,7 +211,7 @@ class ChatService:
         db_connection_id: Optional[UUID] = None,
     ) -> Dict[str, Any]:
         """
-        Process chat query using LangGraph multi-agent workflow.
+        Process chat query - placeholder for new architecture.
 
         Args:
             db: Database session
@@ -221,10 +221,8 @@ class ChatService:
             db_connection_id: Optional database connection ID
 
         Returns:
-            Dict: Response with agent results
+            Dict: Response with results
         """
-        from app.agents.state import create_initial_state
-        from app.agents.graph import run_agent_workflow
         import time
         
         start_time = time.time()
@@ -260,80 +258,23 @@ class ChatService:
         db.refresh(user_message)
 
         try:
-            # Create initial state for agent workflow
-            initial_state = create_initial_state(
-                user_query=user_query,
-                session_id=str(chat.id),
-                user_id=user.id,
-                database_id=effective_db_id  # Pass UUID directly, not converted to int
-            )
-            
-            # Run agent workflow
-            final_state = await run_agent_workflow(initial_state, db)
-            
-            # Extract results
-            response_text = final_state.get("supervisor_response", "I processed your request.")
-            sql_query = final_state.get("sql_query")
-            query_results = final_state.get("query_results", [])
-            dashboard_html = final_state.get("dashboard_html")
-            agent_used = final_state.get("agent_used", "supervisor")
-            error = final_state.get("error")
-            execution_time = final_state.get("execution_time", 0)
-            
-            # Prepare metadata
-            message_metadata = {
-                "agent_used": agent_used,
-                "execution_time": execution_time,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            
-            if error:
-                message_metadata["error"] = error
-            
-            if sql_query:
-                message_metadata["sql_query"] = sql_query
-            
-            if dashboard_html:
-                message_metadata["has_dashboard"] = True
+            # TODO: Implement new architecture here
+            response_text = "Agent architecture has been removed. Please implement new architecture."
             
             # Save assistant message
             assistant_message = Message(
                 chat_id=chat.id,
                 role="assistant",
                 content=response_text,
-                message_metadata=message_metadata,
+                message_metadata={
+                    "timestamp": datetime.utcnow().isoformat()
+                },
             )
             db.add(assistant_message)
             chat.message_count += 1
             chat.updated_at = datetime.utcnow()
             db.commit()
             db.refresh(assistant_message)
-            
-            # Save SQL query history if applicable
-            if sql_query and query_results is not None:
-                query_history = QueryHistory(
-                    user_id=user.id,
-                    db_connection_id=effective_db_id,
-                    chat_id=chat.id,
-                    message_id=assistant_message.id,
-                    query_text=sql_query,
-                    result_data=query_results[:100],  # Store first 100 rows
-                    row_count=len(query_results),
-                    execution_time_ms=int(execution_time * 1000),
-                    status="success" if not error else "failed",
-                )
-                db.add(query_history)
-            
-            # Save dashboard history if applicable
-            if dashboard_html:
-                dashboard_history = DashboardHistory(
-                    user_id=user.id,
-                    chat_id=chat.id,
-                    message_id=assistant_message.id,
-                    dashboard_html=dashboard_html,
-                    dashboard_config=final_state.get("dashboard_config", {}),
-                )
-                db.add(dashboard_history)
             
             db.commit()
             
@@ -345,13 +286,13 @@ class ChatService:
                 "message_id": assistant_message.id,
                 "user_message": user_query,
                 "assistant_message": response_text,
-                "mode": agent_used or "supervisor",  # Ensure mode is never None
-                "sql_query": sql_query,
-                "data": query_results if query_results is not None else [],  # Ensure data is always a list
-                "dashboard_html": dashboard_html,
+                "mode": "placeholder",
+                "sql_query": None,
+                "data": [],
+                "dashboard_html": None,
                 "execution_time_ms": int(total_time * 1000),
-                "row_count": len(query_results) if query_results else 0,
-                "error": error
+                "row_count": 0,
+                "error": None
             }
                 
         except Exception as e:

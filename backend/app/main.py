@@ -40,12 +40,8 @@ async def lifespan(app: FastAPI):
         from app.services.claude_service import claude_service
         print("   ✅ Claude service ready")
         
-        # Verify agents are importable
-        print("   🔄 Loading agent modules...")
-        from app.agents.supervisor_agent import supervisor_agent
-        from app.agents.sql_agent import sql_agent
-        from app.agents.dashboard_agent import dashboard_agent
-        print("   ✅ Agent modules loaded")
+        # Agent architecture removed - ready for new implementation
+        print("   ⚠️  Agent architecture removed - awaiting new implementation")
         
     except Exception as e:
         print(f"\n⚠️  Startup warning: {str(e)}")
@@ -54,10 +50,7 @@ async def lifespan(app: FastAPI):
     
     print("\n" + "=" * 60)
     print("✅ Application Ready!")
-    print("   📊 Multi-Agent System: ACTIVE")
-    print("   🎯 Supervisor Agent: READY")
-    print("   🗄️  SQL Agent: READY")
-    print("   📈 Dashboard Agent: READY")
+    print("   ⚠️  Agent System: NOT IMPLEMENTED")
     print("=" * 60 + "\n")
     
     yield  # Application runs here
