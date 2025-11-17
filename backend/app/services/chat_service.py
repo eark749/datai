@@ -1,5 +1,5 @@
 """
-Chat Service - Orchestration Layer (Agents removed - ready for new architecture)
+Chat Service - Orchestration Layer with SQL Agent Integration
 """
 
 from sqlalchemy.orm import Session
@@ -14,6 +14,8 @@ from app.models.db_connection import DBConnection
 from app.models.user import User
 from app.services.claude_service import claude_service
 from app.services.db_service import db_connection_manager
+from app.services.schema_service import schema_service
+from app.agents.sql_agent import create_sql_agent
 from fastapi import HTTPException, status
 
 
@@ -211,7 +213,7 @@ class ChatService:
         db_connection_id: Optional[UUID] = None,
     ) -> Dict[str, Any]:
         """
-        Process chat query - placeholder for new architecture.
+        Process chat query using SQL Agent.
 
         Args:
             db: Database session
@@ -227,8 +229,15 @@ class ChatService:
         
         start_time = time.time()
         
+        print(f"\n{'='*80}")
+        print(f"🔍 [SERVICE] Starting chat query processing")
+        print(f"👤 [SERVICE] User: {user.email}")
+        print(f"💬 [SERVICE] Query: {user_query}")
+        print(f"{'='*80}\n")
+        
         # Get or create chat
         chat = ChatService.get_or_create_chat(db, user, db_connection_id, chat_id)
+        print(f"💬 [SERVICE] Chat ID: {chat.id}")
 
         # Validate database consistency
         if chat.db_connection_id and db_connection_id:
@@ -256,10 +265,83 @@ class ChatService:
         chat.message_count += 1
         db.commit()
         db.refresh(user_message)
+        print(f"✅ [SERVICE] User message saved")
 
         try:
-            # TODO: Implement new architecture here
-            response_text = "Agent architecture has been removed. Please implement new architecture."
+            # Get chat history for context
+            chat_history = ChatService.get_chat_history(db, chat.id, max_messages=5)
+            
+            response_text = None
+            sql_query = None
+            sql_data = []
+            row_count = 0
+            execution_time_ms = 0
+            mode = "general"
+            
+            # Check if database is connected
+            if effective_db_id:
+                print(f"🔗 [SERVICE] Database connected: {effective_db_id}")
+                
+                # Get database configuration
+                db_config = db.query(DBConnection).filter(
+                    DBConnection.id == effective_db_id,
+                    DBConnection.user_id == user.id
+                ).first()
+                
+                if not db_config:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Database connection not found"
+                    )
+                
+                print(f"📊 [SERVICE] Database: {db_config.database_name} ({db_config.db_type})")
+                
+                # Load schema
+                print(f"📊 [SERVICE] Loading database schema...")
+                schema = await schema_service.get_or_load_schema(db_config)
+                
+                # Create SQL agent
+                print(f"🤖 [SERVICE] Creating SQL agent...")
+                agent = await create_sql_agent(db_config, schema)
+                
+                # Process query with agent
+                print(f"🧠 [SERVICE] Processing query with SQL agent...")
+                agent_result = await agent.process_query(user_query, chat_history)
+                
+                if agent_result["success"]:
+                    response_text = agent_result["response"]
+                    sql_query = agent_result.get("sql_query")
+                    sql_data = agent_result.get("data", [])
+                    row_count = agent_result.get("row_count", 0)
+                    execution_time_ms = agent_result.get("execution_time_ms", 0)
+                    mode = agent_result.get("mode", "general")
+                    
+                    # Save query history if SQL was executed
+                    if sql_query:
+                        query_history = QueryHistory(
+                            chat_id=chat.id,
+                            db_connection_id=db_config.id,
+                            user_query=user_query,
+                            generated_sql=sql_query,
+                            execution_status="success",
+                            rows_returned=row_count,
+                            execution_time_ms=execution_time_ms
+                        )
+                        db.add(query_history)
+                        print(f"💾 [SERVICE] Query history saved")
+                else:
+                    response_text = agent_result.get("response", "I encountered an error processing your query.")
+                    mode = "error"
+                    
+            else:
+                # No database connected - use Claude for general conversation
+                print(f"⚠️  [SERVICE] No database connected, using general conversation mode")
+                response_text = await claude_service.generate_response(
+                    user_query,
+                    system_prompt="You are a helpful AI assistant. The user hasn't connected a database yet. Be friendly and explain what you can do when they connect a database.",
+                    context={"chat_history": chat_history}
+                )
+                mode = "general"
             
             # Save assistant message
             assistant_message = Message(
@@ -267,7 +349,9 @@ class ChatService:
                 role="assistant",
                 content=response_text,
                 message_metadata={
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "mode": mode,
+                    "sql_executed": sql_query is not None
                 },
             )
             db.add(assistant_message)
@@ -276,9 +360,15 @@ class ChatService:
             db.commit()
             db.refresh(assistant_message)
             
-            db.commit()
+            total_time = int((time.time() - start_time) * 1000)
             
-            total_time = time.time() - start_time
+            print(f"\n{'='*80}")
+            print(f"✅ [SERVICE] Query processed successfully")
+            print(f"⏱️  [SERVICE] Total time: {total_time}ms")
+            print(f"📊 [SERVICE] Mode: {mode}")
+            if sql_query:
+                print(f"📝 [SERVICE] SQL executed: {row_count} rows returned")
+            print(f"{'='*80}\n")
             
             return {
                 "success": True,
@@ -286,19 +376,21 @@ class ChatService:
                 "message_id": assistant_message.id,
                 "user_message": user_query,
                 "assistant_message": response_text,
-                "mode": "placeholder",
-                "sql_query": None,
-                "data": [],
+                "mode": mode,
+                "sql_query": sql_query,
+                "data": sql_data,
                 "dashboard_html": None,
-                "execution_time_ms": int(total_time * 1000),
-                "row_count": 0,
+                "execution_time_ms": total_time,
+                "row_count": row_count,
                 "error": None
             }
                 
         except Exception as e:
             # Handle unexpected errors
             error_msg = f"An error occurred: {str(e)}"
-            print(f"💥 Error in process_chat_query: {error_msg}")
+            print(f"\n{'='*80}")
+            print(f"❌ [SERVICE] Error in process_chat_query: {error_msg}")
+            print(f"{'='*80}\n")
             import traceback
             traceback.print_exc()
 
