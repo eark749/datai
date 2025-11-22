@@ -14,8 +14,7 @@ from app.schemas.database import (
     DBConnectionCreate,
     DBConnectionUpdate,
     DBConnectionResponse,
-    DBConnectionTest,
-    DBConnectionConnect
+    DBConnectionTest
 )
 from app.services.db_service import db_connection_manager
 from app.services.schema_service import schema_service
@@ -279,14 +278,9 @@ async def connect_and_load_schema(
     Raises:
         HTTPException: If connection fails or schema cannot be loaded
     """
-    print(f"\n{'='*80}")
-    print(f"🔌 [DB_API] Connecting to database: {connection_data.database_name}")
-    print(f"{'='*80}\n")
-    
     try:
         # Encrypt password
         encrypted_password = db_connection_manager.encrypt_password(connection_data.password)
-        print(f"🔐 [DB_API] Password encrypted")
         
         # Create new database connection
         new_connection = DBConnection(
@@ -304,64 +298,26 @@ async def connect_and_load_schema(
         # Add to session to get an ID assigned (but don't commit yet)
         db.add(new_connection)
         db.flush()  # This assigns the ID without committing
-        print(f"💾 [DB_API] Connection created with ID: {new_connection.id}")
         
         # Test the connection (now it has an ID for logging)
-        print(f"🧪 [DB_API] Testing connection...")
         test_log = db_connection_manager.test_connection(new_connection, db)
         
         if test_log.test_status != "success":
             # Rollback the connection creation
             db.rollback()
-            print(f"❌ [DB_API] Connection test failed: {test_log.error_message}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Connection test failed: {test_log.error_message}"
             )
         
-        print(f"✅ [DB_API] Connection test successful ({test_log.response_time_ms}ms)")
-        
         # Connection successful, commit it
         db.commit()
         db.refresh(new_connection)
         
-        # Load schema
+        # TODO: Implement schema loading with new architecture
         schema_loaded = False
         schema_info = None
-        error_message = None
-        
-        try:
-            print(f"📊 [DB_API] Loading database schema...")
-            schema = await schema_service.get_or_load_schema(new_connection)
-            schema_loaded = True
-            
-            # Create summary for response
-            schema_info = {
-                "database_name": schema["database_name"],
-                "database_type": schema["database_type"],
-                "table_count": len(schema["tables"]),
-                "tables": [
-                    {
-                        "name": table["name"],
-                        "column_count": len(table["columns"]),
-                        "has_primary_key": len(table["primary_keys"]) > 0,
-                        "foreign_key_count": len(table["foreign_keys"])
-                    }
-                    for table in schema["tables"]
-                ]
-            }
-            
-            print(f"✅ [DB_API] Schema loaded successfully!")
-            print(f"📊 [DB_API] Found {len(schema['tables'])} tables")
-            
-        except Exception as schema_error:
-            error_message = f"Schema loading failed: {str(schema_error)}"
-            print(f"⚠️  [DB_API] {error_message}")
-            # Don't fail the connection, just warn
-        
-        print(f"\n{'='*80}")
-        print(f"✅ [DB_API] Database connected and ready!")
-        print(f"{'='*80}\n")
+        error_message = "Schema loading not yet implemented"
         
         return DBConnectionConnect(
             connection=new_connection,
@@ -374,7 +330,6 @@ async def connect_and_load_schema(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ [DB_API] Failed to create connection: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create connection: {str(e)}"

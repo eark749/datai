@@ -223,8 +223,10 @@ class ChatService:
             db_connection_id: Optional database connection ID
 
         Returns:
-            Dict: Response with results
+            Dict: Response with agent results
         """
+        from app.agents.state import create_initial_state
+        from app.agents.graph import run_agent_workflow
         import time
         
         start_time = time.time()

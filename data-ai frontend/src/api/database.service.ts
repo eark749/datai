@@ -33,20 +33,6 @@ export interface TestConnectionResponse {
   response_time_ms?: number;
 }
 
-export interface ConnectDatabaseResponse {
-  connection: DatabaseConnectionResponse;
-  schema_loaded: boolean;
-  schema_info?: {
-    database_type: string;
-    table_count: number;
-    tables: Array<{
-      name: string;
-      column_count: number;
-    }>;
-  };
-  error_message?: string;
-}
-
 /**
  * Create a new database connection
  */
@@ -123,24 +109,6 @@ export const testDatabaseConnection = async (
     `/api/databases/${connectionId}/test`
   );
   console.log('Test result:', response.data);
-  return response.data;
-};
-
-/**
- * Connect to a database and load its schema
- */
-export const connectAndLoadSchema = async (
-  data: DatabaseConnectionRequest
-): Promise<ConnectDatabaseResponse> => {
-  console.log('Connecting to database and loading schema:', { name: data.name, type: data.db_type });
-  const response = await apiClient.post<ConnectDatabaseResponse>('/api/databases/connect', data);
-  console.log('Connection established. Schema loaded:', response.data.schema_loaded);
-  if (response.data.schema_info) {
-    console.log('Schema info:', {
-      database_type: response.data.schema_info.database_type,
-      table_count: response.data.schema_info.table_count
-    });
-  }
   return response.data;
 };
 

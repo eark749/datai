@@ -230,5 +230,3 @@ sql_validator = SQLValidator()
 
 
 
-
-

@@ -4,10 +4,8 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Alert } from './ui/alert';
-import { X, Loader2, CheckCircle2, Database } from 'lucide-react';
+import { X, Loader2, CheckCircle2 } from 'lucide-react';
 import { DatabaseConnection } from './ChatInterface';
-import { connectAndLoadSchema } from '../api/database.service';
-import { AxiosError } from 'axios';
 
 interface DatabaseConnectionModalProps {
   onClose: () => void;
@@ -27,12 +25,9 @@ export function DatabaseConnectionModal({
   const [username, setUsername] = useState(existingConnection?.username || '');
   const [password, setPassword] = useState(existingConnection?.password || '');
   const [database, setDatabase] = useState(existingConnection?.database || '');
-  const [isTestLoading, setIsTestLoading] = useState(false);
-  const [isConnectLoading, setIsConnectLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [testSuccess, setTestSuccess] = useState(false);
-  const [connectSuccess, setConnectSuccess] = useState(false);
-  const [schemaInfo, setSchemaInfo] = useState<{ table_count: number; database_type: string } | null>(null);
 
   // Set default port based on DB type
   useEffect(() => {
@@ -53,7 +48,6 @@ export function DatabaseConnectionModal({
   const handleTest = async () => {
     setError('');
     setTestSuccess(false);
-    setConnectSuccess(false);
 
     if (!name || !host || !username || !database) {
       setError('Please fill in all required fields');
@@ -65,20 +59,16 @@ export function DatabaseConnectionModal({
       return;
     }
 
-    setIsTestLoading(true);
+    setIsLoading(true);
 
-    // Mock test connection (in real scenario, you'd call a test-only endpoint)
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Mock test connection
+    await new Promise(resolve => setTimeout(resolve, 1500));
 
-    setIsTestLoading(false);
+    setIsLoading(false);
     setTestSuccess(true);
   };
 
-  const handleConnect = async () => {
-    setError('');
-    setConnectSuccess(false);
-    setSchemaInfo(null);
-
+  const handleSave = () => {
     if (!name || !host || !username || !database) {
       setError('Please fill in all required fields');
       return;
@@ -89,68 +79,19 @@ export function DatabaseConnectionModal({
       return;
     }
 
-    setIsConnectLoading(true);
+    const connection: Omit<DatabaseConnection, 'id'> = {
+      name,
+      type: dbType,
+      host,
+      port,
+      username,
+      password,
+      database,
+      connected: testSuccess,
+      isDefault: existingConnection?.isDefault || false,
+    };
 
-    try {
-      // Map frontend field names to backend API names
-      const dbTypeMap: Record<string, string> = {
-        'PostgreSQL': 'postgresql',
-        'MySQL': 'mysql',
-        'SQLite': 'sqlite',
-        'MongoDB': 'mongodb',
-        'MariaDB': 'mariadb',
-        'Oracle': 'oracle',
-        'MSSQL': 'mssql'
-      };
-
-      const response = await connectAndLoadSchema({
-        name,
-        db_type: dbTypeMap[dbType] || dbType.toLowerCase(),
-        host,
-        port: parseInt(port),
-        database_name: database,
-        username,
-        password,
-        db_schema: 'public'
-      });
-
-      setConnectSuccess(true);
-      
-      if (response.schema_loaded && response.schema_info) {
-        setSchemaInfo({
-          table_count: response.schema_info.table_count,
-          database_type: response.schema_info.database_type
-        });
-      }
-
-      // Prepare connection object for parent component
-      const connection: Omit<DatabaseConnection, 'id'> = {
-        name,
-        type: dbType,
-        host,
-        port,
-        username,
-        password,
-        database,
-        connected: true,
-        isDefault: existingConnection?.isDefault || false,
-      };
-
-      // Wait a moment to show success message
-      setTimeout(() => {
-        onSave(connection);
-      }, 1500);
-
-    } catch (error) {
-      console.error('Connection error:', error);
-      if (error instanceof AxiosError) {
-        setError(error.response?.data?.detail || 'Failed to connect to database');
-      } else {
-        setError('Failed to connect to database. Please check your settings.');
-      }
-    } finally {
-      setIsConnectLoading(false);
-    }
+    onSave(connection);
   };
 
   return (
@@ -270,64 +211,35 @@ export function DatabaseConnectionModal({
             </Alert>
           )}
 
-          {testSuccess && !connectSuccess && (
+          {testSuccess && (
             <Alert className="bg-green-50 border-green-200 text-green-800 rounded-xl flex items-center gap-2">
               <CheckCircle2 className="h-4 w-4" />
-              Connection test successful! Ready to connect.
-            </Alert>
-          )}
-
-          {connectSuccess && (
-            <Alert className="bg-green-50 border-green-200 text-green-800 rounded-xl">
-              <div className="flex items-start gap-2">
-                <CheckCircle2 className="h-4 w-4 mt-0.5" />
-                <div className="flex-1">
-                  <div className="font-medium">Connection successful!</div>
-                  {schemaInfo && (
-                    <div className="text-xs mt-1 flex items-center gap-1">
-                      <Database className="h-3 w-3" />
-                      Schema loaded: {schemaInfo.table_count} tables found ({schemaInfo.database_type})
-                    </div>
-                  )}
-                </div>
-              </div>
+              Connection test successful!
             </Alert>
           )}
 
           <div className="flex gap-3 pt-4">
             <Button
               onClick={handleTest}
-              disabled={isTestLoading || isConnectLoading || connectSuccess}
+              disabled={isLoading}
               variant="outline"
               className="flex-1 h-11 rounded-xl border-slate-300 hover:bg-slate-100"
             >
-              {isTestLoading ? (
+              {isLoading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Testing...
                 </>
               ) : (
-                'Test'
+                'Test Connection'
               )}
             </Button>
             <Button
-              onClick={handleConnect}
-              disabled={isTestLoading || isConnectLoading || connectSuccess}
+              onClick={handleSave}
+              disabled={isLoading}
               className="flex-1 h-11 bg-black hover:bg-gray-800 text-white rounded-xl"
             >
-              {isConnectLoading ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Connecting & Loading Schema...
-                </>
-              ) : connectSuccess ? (
-                <>
-                  <CheckCircle2 className="mr-2 h-4 w-4" />
-                  Connected!
-                </>
-              ) : (
-                'Connect'
-              )}
+              {existingConnection ? 'Update' : 'Save'}
             </Button>
           </div>
         </div>
